@@ -4,14 +4,18 @@ import subprocess
 import time
 from typing import Any
 import os
+import base64
+import json
+import re
 
 import requests
 
 
 class OllamaClient:
-    def __init__(self, base_url: str, model: str):
+    def __init__(self, base_url: str, text_model: str, vision_model: str = ""):
         self.base_url = base_url.rstrip("/")
-        self.model = model.strip()
+        self.text_model = text_model.strip()
+        self.vision_model = vision_model.strip()
 
     def ensure_server(self, autostart: bool, timeout_seconds: int, use_highest_vram_gpu: bool = False) -> bool:
         if self._is_server_ready():
@@ -38,11 +42,19 @@ class OllamaClient:
             time.sleep(0.5)
         return False
 
-    def set_model(self, model: str) -> None:
-        self.model = model.strip()
+    def set_text_model(self, model: str) -> None:
+        self.text_model = model.strip()
 
-    def get_model(self) -> str:
-        return self._resolve_model()
+    def set_vision_model(self, model: str) -> None:
+        self.vision_model = model.strip()
+
+    def get_text_model(self) -> str:
+        return self._resolve_text_model()
+
+    def get_vision_model(self) -> str:
+        if self.vision_model:
+            return self.vision_model
+        return self._resolve_text_model()
 
     def list_models(self) -> list[str]:
         try:
@@ -150,10 +162,86 @@ class OllamaClient:
     def generate_text(self, prompt: str) -> str:
         return self._generate(prompt)
 
-    def _generate(self, prompt: str) -> str:
-        model = self._resolve_model()
+    def summarize_image(self, image_bytes: bytes, user_instruction: str = "") -> str:
+        model = self.get_vision_model()
         if not model:
-            return "Summary unavailable (set OLLAMA_MODEL or install at least one Ollama model)."
+            return "Image summary unavailable (no active vision model)."
+
+        prompt = (
+            "Summarize this image for a productivity assistant. "
+            "Return concise plain text with key details, dates/deadlines, and possible follow-up actions if visible. "
+            f"User request context: {user_instruction or 'No extra instructions provided.'}"
+        )
+        encoded_image = base64.b64encode(image_bytes).decode("ascii")
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "images": [encoded_image],
+            "stream": False,
+        }
+        try:
+            response = requests.post(f"{self.base_url}/api/generate", json=payload, timeout=90)
+            response.raise_for_status()
+            data = response.json()
+            text = (data.get("response") or "").strip()
+            return text or "I could not extract a useful summary from that image."
+        except Exception as exc:
+            return f"Image summary unavailable (Ollama error: {exc})."
+
+    def extract_reminder_from_image(self, image_bytes: bytes, user_instruction: str) -> dict[str, str]:
+        model = self.get_vision_model()
+        if not model:
+            return {
+                "title": "Review image details",
+                "notes": "Vision summary unavailable (no active vision model).",
+            }
+
+        prompt = (
+            "You extract reminder details from an image for a personal productivity bot. "
+            "Return STRICT JSON ONLY with keys: title, notes. "
+            "Rules: title must be actionable, 3-12 words, and must NOT be a generic heading like 'Summary'. "
+            "notes must be <= 280 chars. "
+            "If uncertain, infer the most likely concrete task from visible content. "
+            f"User context: {user_instruction or 'No extra instructions provided.'}"
+        )
+        encoded_image = base64.b64encode(image_bytes).decode("ascii")
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "images": [encoded_image],
+            "stream": False,
+        }
+        try:
+            response = requests.post(f"{self.base_url}/api/generate", json=payload, timeout=90)
+            response.raise_for_status()
+            data = response.json()
+            raw = (data.get("response") or "").strip()
+        except Exception as exc:
+            return {
+                "title": "Review image details",
+                "notes": f"Vision summary unavailable (Ollama error: {exc}).",
+            }
+
+        parsed = self._parse_json_response(raw)
+        if parsed:
+            title = (parsed.get("title") or "").strip()
+            notes = (parsed.get("notes") or "").strip()
+            if title:
+                return {
+                    "title": self._clamp_words(title, max_words=12),
+                    "notes": notes[:280],
+                }
+
+        fallback_title = self._clamp_words(self._first_nonempty_line(raw) or "Review image details", max_words=12)
+        return {
+            "title": fallback_title,
+            "notes": raw[:280],
+        }
+
+    def _generate(self, prompt: str) -> str:
+        model = self._resolve_text_model()
+        if not model:
+            return "Summary unavailable (set OLLAMA_TEXT_MODEL or OLLAMA_MODEL, or install at least one Ollama model)."
 
         url = f"{self.base_url}/api/generate"
         payload = {
@@ -170,9 +258,9 @@ class OllamaClient:
         except Exception as exc:
             return f"Summary unavailable (Ollama error: {exc})."
 
-    def _resolve_model(self) -> str:
-        if self.model:
-            return self.model
+    def _resolve_text_model(self) -> str:
+        if self.text_model:
+            return self.text_model
         try:
             response = requests.get(f"{self.base_url}/api/tags", timeout=5)
             response.raise_for_status()
@@ -182,10 +270,42 @@ class OllamaClient:
                 return ""
             first_name = (models[0].get("name") or "").strip()
             if first_name:
-                self.model = first_name
-            return self.model
+                self.text_model = first_name
+            return self.text_model
         except Exception:
             return ""
+
+    def _parse_json_response(self, text: str) -> dict[str, str] | None:
+        try:
+            loaded = json.loads(text)
+            if isinstance(loaded, dict):
+                return {str(k): str(v) for k, v in loaded.items()}
+        except Exception:
+            pass
+
+        match = re.search(r"\{[\s\S]*\}", text)
+        if not match:
+            return None
+        try:
+            loaded = json.loads(match.group(0))
+        except Exception:
+            return None
+        if not isinstance(loaded, dict):
+            return None
+        return {str(k): str(v) for k, v in loaded.items()}
+
+    def _clamp_words(self, text: str, max_words: int) -> str:
+        words = text.split()
+        if len(words) <= max_words:
+            return text.strip()
+        return " ".join(words[:max_words]).strip()
+
+    def _first_nonempty_line(self, text: str) -> str:
+        for line in text.splitlines():
+            cleaned = line.strip("- *\t ")
+            if cleaned:
+                return cleaned
+        return ""
 
     def _is_server_ready(self) -> bool:
         try:

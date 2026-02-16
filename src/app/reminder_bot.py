@@ -16,7 +16,12 @@ from telegram.ext import (
     filters,
 )
 
+from src.app.handlers.attachment_input_handler import AttachmentInputHandler
+from src.app.handlers.reminder_draft_manager import ReminderDraftManager
+from src.app.handlers.reminder_formatting import format_due_display, format_reminder_brief, format_reminder_detail
+from src.app.handlers.text_input_handler import TextInputHandler
 from src.clients.ollama_client import OllamaClient
+from src.clients.stt_client import SttClient
 from src.core.config import Settings
 from src.storage.database import Database
 
@@ -31,8 +36,28 @@ Show this help message
 /add <task> [p:immediate|high|mid|low] [at:<time>] [every:daily|weekly|monthly]
 Example: /add Pay rent p:high at:tomorrow 9am
 
+/edit <id> [title:<text>] [p:<priority>] [at:<datetime>] [notes:<text>] [every:daily|weekly|monthly|none]
+Examples:
+- /edit 12 p:high at:tomorrow 9am
+- /edit 12 title:Review ASAVC notes:Bring Smart No.4
+
 /done <id>
 Example: /done 12
+
+/delete <id>
+Permanently delete reminder
+
+/detail <id>
+Show full reminder details
+
+/delete <id>
+Permanently delete reminder (no archive)
+
+/edit <id> [title:<text>] [p:<priority>] [at:<datetime>] [notes:<text>] [every:daily|weekly|monthly|none]
+Edit reminder fields
+
+/detail <id>
+Show full reminder details
 
 /list all
 /list priority <immediate|high|mid|low>
@@ -49,16 +74,56 @@ You can also type natural language like:
 - summarize for me
 - help me summarize
 - summarize it for me and remind me tomorrow 9am p:high
+- reply to a message: add as reminder high tomorrow 9am
+- reply to a reminder card: set to tomorrow 8am high
 - what hackathons are available on 1 Mar - 15 Mar
+
+Reminder response format:
+- ID: <id>
+- Title: <title>
+- Date: dd/mm/yy [HH:mm]
+Use /detail <id> for full notes/details.
 
 /models
 List installed Ollama models
 
-/model [name]
-Show active model or set model for summaries
+/model
+Show active text/vision models
+
+/model <name>
+Set active text model (backward-compatible)
+
+/model text <name>
+Set active text model
+
+/model vision <name>
+Set active vision model
+
+/model tag <name> vision
+Tag a model as vision-capable
+
+/model untag <name> vision
+Remove a model's vision-capable tag
 
 /status
 Show Ollama and GPU status
+
+Image reminder flow:
+- send an image
+- add a caption with reminder details, or reply to the image (example: remind me high tomorrow 9am)
+
+Audio reminder flow:
+- send audio/voice with caption, or reply to audio/voice
+- examples: summarize this audio / create reminders from this recording
+
+Draft confirmation flow for summaries/images/documents:
+- bot proposes one or more reminders first
+- you review/edit before saving
+- reply with: confirm | confirm 1,3 | edit <n> ... | remove <n> | cancel
+
+Document flow (DOCX/PDF):
+- send a DOCX or PDF with caption, or reply to one
+- examples: summarize this document / create reminder low tomorrow 9am
 """
 
 
@@ -66,13 +131,33 @@ class ReminderBot:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.db = Database(settings.db_path)
-        self.pending_summary_followups: dict[int, dict[str, str]] = {}
-        self.ollama = OllamaClient(settings.ollama_base_url, settings.ollama_model)
-        saved_model = self.db.get_app_setting("ollama_model")
-        if saved_model:
-            self.ollama.set_model(saved_model)
-        elif settings.ollama_model:
-            self.db.set_app_setting("ollama_model", settings.ollama_model)
+        initial_text_model = settings.ollama_text_model or settings.ollama_model
+        self.ollama = OllamaClient(
+            settings.ollama_base_url,
+            text_model=initial_text_model,
+            vision_model=settings.ollama_vision_model,
+        )
+        saved_text_model = self.db.get_app_setting("ollama_text_model")
+        legacy_model = self.db.get_app_setting("ollama_model")
+        if saved_text_model:
+            self.ollama.set_text_model(saved_text_model)
+        elif legacy_model:
+            self.ollama.set_text_model(legacy_model)
+            self.db.set_app_setting("ollama_text_model", legacy_model)
+        elif initial_text_model:
+            self.db.set_app_setting("ollama_text_model", initial_text_model)
+
+        saved_vision_model = self.db.get_app_setting("ollama_vision_model")
+        if saved_vision_model:
+            self.ollama.set_vision_model(saved_vision_model)
+        elif settings.ollama_vision_model:
+            self.db.set_app_setting("ollama_vision_model", settings.ollama_vision_model)
+
+        self.vision_model_tags = self._load_vision_model_tags()
+        current_vision = self.ollama.get_vision_model()
+        if current_vision:
+            self.vision_model_tags.add(current_vision)
+            self._save_vision_model_tags()
         ollama_ready = self.ollama.ensure_server(
             autostart=settings.ollama_autostart,
             timeout_seconds=settings.ollama_start_timeout_seconds,
@@ -82,6 +167,17 @@ class ReminderBot:
             LOGGER.warning("Ollama is not reachable at %s", settings.ollama_base_url)
         self.scheduler = AsyncIOScheduler(timezone="UTC")
         self.app = Application.builder().token(settings.telegram_bot_token).build()
+        self.stt = SttClient(self.settings)
+        self.reminder_draft_manager = ReminderDraftManager(self.db, self.ollama, self.settings)
+        self.text_input_handler = TextInputHandler(self.db, self.ollama, self.settings, self.reminder_draft_manager)
+        self.attachment_input_handler = AttachmentInputHandler(
+            self.app,
+            self.db,
+            self.ollama,
+            self.stt,
+            self.settings,
+            self.reminder_draft_manager,
+        )
         self._register_handlers()
         self._register_jobs()
 
@@ -89,17 +185,27 @@ class ReminderBot:
         self.app.add_handler(MessageHandler(filters.ALL, self._ingest_message), group=-1)
         self.app.add_handler(CommandHandler("help", self.help_command))
         self.app.add_handler(CommandHandler("add", self.add_command))
+        self.app.add_handler(CommandHandler("edit", self.edit_command))
         self.app.add_handler(CommandHandler("done", self.done_command))
+        self.app.add_handler(CommandHandler("delete", self.delete_command))
+        self.app.add_handler(CommandHandler(["detail", "details"], self.detail_command))
         self.app.add_handler(CommandHandler("list", self.list_command))
         self.app.add_handler(CommandHandler("summary", self.summary_command))
         self.app.add_handler(CommandHandler("models", self.models_command))
         self.app.add_handler(CommandHandler("model", self.model_command))
         self.app.add_handler(CommandHandler("status", self.status_command))
+        self.app.add_handler(
+            MessageHandler(
+                (filters.PHOTO | filters.Document.ALL | filters.AUDIO | filters.VOICE) & ~filters.COMMAND,
+                self.attachment_message_handler,
+            )
+        )
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.normal_chat_handler))
 
     def _register_jobs(self) -> None:
         self.scheduler.add_job(self.process_due_reminders, "interval", seconds=30)
         self.scheduler.add_job(self.cleanup_archives, "cron", hour=1, minute=0)
+        self.scheduler.add_job(self.cleanup_messages, "cron", hour=1, minute=15)
         digest_times = self.settings.digest_times_utc or ((self.settings.digest_hour_utc, self.settings.digest_minute_utc),)
         seen: set[tuple[int, int]] = set()
         for hour, minute in digest_times:
@@ -117,8 +223,10 @@ class ReminderBot:
         if not update.message:
             return
         message = update.message
-        text = message.text or ""
+        text = message.text or message.caption or ""
         source_type = "group" if message.chat.type in {"group", "supergroup"} else "dm"
+        if not self._should_store_message(message.chat_id, source_type, text):
+            return
         received_at = message.date.astimezone(timezone.utc).isoformat()
         sender_id = message.from_user.id if message.from_user else None
         self.db.save_inbound_message(
@@ -130,6 +238,21 @@ class ReminderBot:
             source_type=source_type,
             received_at_utc=received_at,
         )
+
+    def _should_store_message(self, chat_id: int, source_type: str, text: str) -> bool:
+        normalized = (text or "").strip().lower()
+
+        if source_type == "group":
+            monitored_group = self.settings.monitored_group_chat_id
+            if not monitored_group:
+                return False
+            return int(chat_id) == int(monitored_group)
+
+        if int(chat_id) != int(self.settings.personal_chat_id):
+            return False
+
+        hackathon_markers = ("hackathon", "hackathons", "devpost", "mlh", "registration", "deadline")
+        return any(marker in normalized for marker in hackathon_markers)
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if update.message:
@@ -164,9 +287,7 @@ class ReminderBot:
             recurrence_rule=parsed["recurrence"],
         )
         await update.message.reply_text(
-            f"Saved reminder #{reminder_id}: {parsed['title']}\n"
-            f"Priority: {parsed['priority']}\n"
-            f"Due (UTC): {parsed['due_at_utc']}"
+            format_reminder_brief(reminder_id, parsed["title"], parsed["due_at_utc"], self.settings.default_timezone)
         )
 
     async def done_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -186,6 +307,108 @@ class ReminderBot:
             await update.message.reply_text(f"Reminder #{reminder_id} archived.")
         else:
             await update.message.reply_text(f"Reminder #{reminder_id} not found or already archived.")
+
+    async def edit_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not update.message:
+            return
+        if len(context.args) < 2:
+            await update.message.reply_text(
+                "Usage: /edit <id> [title:<text>] [p:<priority>] [at:<datetime>] [notes:<text>] [every:daily|weekly|monthly|none]"
+            )
+            return
+
+        try:
+            reminder_id = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("Reminder id must be a number.")
+            return
+
+        existing = self.db.get_reminder_by_id(reminder_id)
+        if existing is None:
+            await update.message.reply_text(f"Reminder #{reminder_id} not found.")
+            return
+
+        payload = " ".join(context.args[1:]).strip()
+        if not payload:
+            await update.message.reply_text("Please provide fields to update.")
+            return
+
+        parsed = self._parse_edit_payload(payload)
+        if parsed.get("error"):
+            await update.message.reply_text(parsed["error"])
+            return
+
+        current = dict(existing)
+        title = parsed["title"] if parsed["title"] is not None else str(current.get("title") or "")
+        notes = parsed["notes"] if parsed["notes"] is not None else str(current.get("notes") or "")
+        priority = parsed["priority"] if parsed["priority"] is not None else str(current.get("priority") or "mid")
+        due_at_utc = parsed["due_at_utc"] if parsed["due_at_utc"] is not None else str(current.get("due_at_utc") or "")
+
+        existing_recurrence = current.get("recurrence_rule")
+        recurrence_rule: str | None
+        if parsed["recurrence"] is None:
+            recurrence_rule = str(existing_recurrence) if existing_recurrence is not None else None
+        else:
+            recurrence_rule = parsed["recurrence"]
+
+        if not title.strip():
+            await update.message.reply_text("Title cannot be empty.")
+            return
+        if not due_at_utc:
+            await update.message.reply_text("Due date/time cannot be empty.")
+            return
+
+        ok = self.db.update_reminder_fields(
+            reminder_id=reminder_id,
+            title=title.strip(),
+            notes=notes,
+            priority=priority,
+            due_at_utc=due_at_utc,
+            recurrence_rule=recurrence_rule,
+        )
+        if not ok:
+            await update.message.reply_text(f"Reminder #{reminder_id} could not be updated.")
+            return
+
+        await update.message.reply_text(
+            format_reminder_brief(reminder_id, title, due_at_utc, self.settings.default_timezone)
+        )
+
+    async def delete_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not update.message:
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /delete <id>")
+            return
+        try:
+            reminder_id = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("Reminder id must be a number.")
+            return
+
+        ok = self.db.delete_reminder_permanently(reminder_id)
+        if ok:
+            await update.message.reply_text(f"Reminder #{reminder_id} permanently deleted.")
+        else:
+            await update.message.reply_text(f"Reminder #{reminder_id} not found.")
+
+    async def detail_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not update.message:
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /detail <id>")
+            return
+        try:
+            reminder_id = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("Reminder id must be a number.")
+            return
+
+        row = self.db.get_reminder_by_id(reminder_id)
+        if row is None:
+            await update.message.reply_text(f"Reminder #{reminder_id} not found.")
+            return
+        await update.message.reply_text(format_reminder_detail(dict(row), self.settings.default_timezone))
 
     async def list_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message:
@@ -223,8 +446,9 @@ class ReminderBot:
 
         lines = ["Open reminders:"]
         for row in rows[:50]:
+            due_display = format_due_display(str(row["due_at_utc"]), self.settings.default_timezone)
             lines.append(
-                f"#{row['id']} [{row['priority'].upper()}] {row['title']} - {row['due_at_utc']}"
+                f"#{row['id']} [{row['priority'].upper()}] {row['title']} - {due_display}"
             )
         await update.message.reply_text("\n".join(lines))
 
@@ -236,8 +460,19 @@ class ReminderBot:
             await update.message.reply_text("MONITORED_GROUP_CHAT_ID is not set.")
             return
 
-        summary = await self._build_group_summary()
-        await update.message.reply_text(summary)
+        await update.message.reply_text("Got it - summarizing now...")
+        try:
+            summary = await self._build_group_summary()
+            await update.message.reply_text(summary)
+            await update.message.reply_text("Summary complete. I will now draft reminder suggestions.")
+            await self.reminder_draft_manager.propose_from_text(
+                update=update,
+                source_kind="group_summary",
+                content=summary,
+                user_instruction="/summary",
+            )
+        except Exception as exc:
+            await update.message.reply_text(f"I hit an error while running summary: {exc}")
 
     async def models_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message:
@@ -247,11 +482,19 @@ class ReminderBot:
             await update.message.reply_text("No Ollama models found. Pull one with: ollama pull <model>")
             return
 
-        active = self.ollama.get_model()
+        active_text = self.ollama.get_text_model()
+        active_vision = self.ollama.get_vision_model()
         lines = ["Installed Ollama models:"]
         for model in models:
-            marker = " (active)" if model == active else ""
-            lines.append(f"- {model}{marker}")
+            markers: list[str] = []
+            if model == active_text:
+                markers.append("text")
+            if model == active_vision:
+                markers.append("vision-active")
+            if model in self.vision_model_tags:
+                markers.append("vision")
+            marker_text = f" ({', '.join(markers)})" if markers else ""
+            lines.append(f"- {model}{marker_text}")
         await update.message.reply_text("\n".join(lines))
 
     async def model_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -259,25 +502,68 @@ class ReminderBot:
             return
 
         if not context.args:
-            active = self.ollama.get_model()
-            if not active:
-                await update.message.reply_text("No active model yet. Use /models and then /model <name>")
-            else:
-                await update.message.reply_text(f"Active model: {active}")
-            return
-
-        chosen = " ".join(context.args).strip()
-        models = self.ollama.list_models()
-        if chosen not in models:
+            text_model = self.ollama.get_text_model() or "(none)"
+            vision_model = self.ollama.get_vision_model() or "(none)"
             await update.message.reply_text(
-                "Model not installed. Run: ollama pull "
-                f"{chosen}"
+                "Active models:\n"
+                f"- text: {text_model}\n"
+                f"- vision: {vision_model}\n\n"
+                "Usage:\n"
+                "- /model <name>\n"
+                "- /model text <name>\n"
+                "- /model vision <name>\n"
+                "- /model tag <name> vision\n"
+                "- /model untag <name> vision"
             )
             return
 
-        self.ollama.set_model(chosen)
+        models = self.ollama.list_models()
+        first = context.args[0].lower()
+
+        if first in {"tag", "untag"}:
+            if len(context.args) < 3 or context.args[-1].lower() != "vision":
+                await update.message.reply_text("Usage: /model tag <name> vision OR /model untag <name> vision")
+                return
+            target = " ".join(context.args[1:-1]).strip()
+            if target not in models:
+                await update.message.reply_text(f"Model not installed. Run: ollama pull {target}")
+                return
+            if first == "tag":
+                self.vision_model_tags.add(target)
+                self._save_vision_model_tags()
+                await update.message.reply_text(f"Tagged as vision-capable: {target}")
+            else:
+                self.vision_model_tags.discard(target)
+                self._save_vision_model_tags()
+                await update.message.reply_text(f"Removed vision tag: {target}")
+            return
+
+        target_role = "text"
+        if first in {"text", "vision"}:
+            target_role = first
+            chosen = " ".join(context.args[1:]).strip()
+            if not chosen:
+                await update.message.reply_text(f"Usage: /model {target_role} <name>")
+                return
+        else:
+            chosen = " ".join(context.args).strip()
+
+        if chosen not in models:
+            await update.message.reply_text(f"Model not installed. Run: ollama pull {chosen}")
+            return
+
+        if target_role == "vision":
+            self.ollama.set_vision_model(chosen)
+            self.db.set_app_setting("ollama_vision_model", chosen)
+            self.vision_model_tags.add(chosen)
+            self._save_vision_model_tags()
+            await update.message.reply_text(f"Active vision model set to: {chosen}")
+            return
+
+        self.ollama.set_text_model(chosen)
+        self.db.set_app_setting("ollama_text_model", chosen)
         self.db.set_app_setting("ollama_model", chosen)
-        await update.message.reply_text(f"Active model set to: {chosen}")
+        await update.message.reply_text(f"Active text model set to: {chosen}")
 
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message:
@@ -288,13 +574,15 @@ class ReminderBot:
             timeout_seconds=2,
             use_highest_vram_gpu=False,
         )
-        model = self.ollama.get_model() or "(none)"
+        text_model = self.ollama.get_text_model() or "(none)"
+        vision_model = self.ollama.get_vision_model() or "(none)"
         gpu = self.ollama.detect_nvidia_gpu()
         ps_output = self.ollama.ollama_ps()
 
         lines = [
             f"Ollama server: {'running' if ollama_ready else 'not reachable'}",
-            f"Active model: {model}",
+            f"Active text model: {text_model}",
+            f"Active vision model: {vision_model}",
         ]
 
         if gpu.get("has_gpu"):
@@ -307,254 +595,54 @@ class ReminderBot:
         await update.message.reply_text("\n".join(lines))
 
     async def normal_chat_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not update.message or not update.effective_user:
+        if not update.message:
             return
-
-        chat_id = update.effective_chat.id
         text = (update.message.text or "").strip()
         if not text:
             return
 
-        if chat_id != self.settings.personal_chat_id:
+        handled_draft_followup = await self.reminder_draft_manager.handle_followup(update, text)
+        if handled_draft_followup:
             return
 
-        pending = self.pending_summary_followups.get(chat_id)
-        if pending:
-            await self._handle_summary_followup(update, text, pending)
-            return
-
-        lowered = text.lower()
-        if self._has_summary_intent(lowered):
-            await self._handle_summary_intent(update, text)
-            return
-
-        if self._has_hackathon_query_intent(lowered):
-            await self._handle_hackathon_query(update, text)
-            return
-
-        if "remind me" not in lowered and not lowered.startswith("todo"):
-            return
-
-        parsed = self._parse_add_payload(text)
-        if parsed.get("error"):
-            await update.message.reply_text(
-                "I detected reminder intent but need a date/time. Example: /add Pay rent at:tomorrow 9am"
-            )
-            return
-
-        user_id = self.db.upsert_user(
-            update.effective_user.id,
-            update.effective_user.username,
-            self.settings.default_timezone,
+        handled_attachment_reply = await self.attachment_input_handler.handle_message(
+            update,
+            text,
+            allow_current_attachment=False,
         )
-        reminder_id = self.db.create_reminder(
-            user_id=user_id,
-            source_message_id=None,
-            source_kind="user_input",
-            title=parsed["title"],
-            notes="",
-            priority=parsed["priority"],
-            due_at_utc=parsed["due_at_utc"],
-            timezone_name=self.settings.default_timezone,
-            chat_id_to_notify=chat_id,
-            recurrence_rule=parsed["recurrence"],
-        )
-        await update.message.reply_text(f"Added reminder #{reminder_id}: {parsed['title']}")
-
-    async def _handle_summary_intent(self, update: Update, text: str) -> None:
-        if not update.message or not update.effective_user:
+        if handled_attachment_reply:
             return
 
-        inline_content = self._extract_summary_content(text)
-        if inline_content:
-            summary = self._summarize_inline_text(inline_content)
-        elif self.settings.monitored_group_chat_id:
-            summary = await self._build_group_summary()
-        else:
-            await update.message.reply_text(
-                "Please paste the content after your summarize request, or set MONITORED_GROUP_CHAT_ID for group summaries."
-            )
-            return
-
-        await update.message.reply_text(summary)
-
-        details = self._extract_due_and_priority(text)
-        if details.get("due_at_utc") and details.get("priority"):
-            user_id = self.db.upsert_user(
-                update.effective_user.id,
-                update.effective_user.username,
-                self.settings.default_timezone,
-            )
-            reminder_id = self.db.create_reminder(
-                user_id=user_id,
-                source_message_id=None,
-                source_kind="group_summary",
-                title="Review summary action items",
-                notes=summary[:1500],
-                priority=details["priority"],
-                due_at_utc=details["due_at_utc"],
-                timezone_name=self.settings.default_timezone,
-                chat_id_to_notify=update.effective_chat.id,
-                recurrence_rule=None,
-            )
-            await update.message.reply_text(
-                f"Saved reminder #{reminder_id} from summary with priority {details['priority']}"
-            )
-            return
-
-        self.pending_summary_followups[update.effective_chat.id] = {
-            "summary": summary[:1500],
-            "title": "Review summary action items",
-        }
-        await update.message.reply_text(
-            "I can turn this into a notification. Reply with urgency and due date/time. "
-            "Example: high tomorrow 9am"
+        await self.text_input_handler.handle_message(
+            update,
+            parse_add_payload=self._parse_add_payload,
+            build_group_summary=self._build_group_summary,
         )
 
-    async def _handle_summary_followup(self, update: Update, text: str, pending: dict[str, str]) -> None:
-        if not update.message or not update.effective_user:
-            return
-
-        lowered = text.strip().lower()
-        if lowered in {"cancel", "skip", "never mind"}:
-            self.pending_summary_followups.pop(update.effective_chat.id, None)
-            await update.message.reply_text("Okay, cancelled summary reminder creation.")
-            return
-
-        details = self._extract_due_and_priority(text)
-        missing_fields = []
-        if not details.get("priority"):
-            missing_fields.append("urgency (immediate/high/mid/low)")
-        if not details.get("due_at_utc"):
-            missing_fields.append("due date/time")
-        if missing_fields:
-            await update.message.reply_text(
-                "I still need: " + ", ".join(missing_fields) + ". Example: high tomorrow 9am"
-            )
-            return
-
-        user_id = self.db.upsert_user(
-            update.effective_user.id,
-            update.effective_user.username,
-            self.settings.default_timezone,
-        )
-        reminder_id = self.db.create_reminder(
-            user_id=user_id,
-            source_message_id=None,
-            source_kind="group_summary",
-            title=pending.get("title", "Review summary action items"),
-            notes=pending.get("summary", ""),
-            priority=details["priority"],
-            due_at_utc=details["due_at_utc"],
-            timezone_name=self.settings.default_timezone,
-            chat_id_to_notify=update.effective_chat.id,
-            recurrence_rule=None,
-        )
-        self.pending_summary_followups.pop(update.effective_chat.id, None)
-        await update.message.reply_text(f"Saved reminder #{reminder_id} from summary.")
-
-    def _has_summary_intent(self, lowered_text: str) -> bool:
-        patterns = [
-            "summarize for me",
-            "help me summarize",
-            "summarize it for me",
-            "can you summarize",
-        ]
-        return any(p in lowered_text for p in patterns)
-
-    def _has_hackathon_query_intent(self, lowered_text: str) -> bool:
-        if "hackathon" not in lowered_text and "hackathons" not in lowered_text:
-            return False
-        query_markers = ["what", "which", "available", "list", "show", "between", "from"]
-        return any(marker in lowered_text for marker in query_markers)
-
-    def _extract_summary_content(self, text: str) -> str:
-        markers = [
-            "summarize for me",
-            "help me summarize",
-            "summarize it for me",
-            "can you summarize",
-        ]
-        lowered = text.lower()
-        start = -1
-        marker_used = ""
-        for marker in markers:
-            idx = lowered.find(marker)
-            if idx >= 0:
-                start = idx
-                marker_used = marker
-                break
-        if start < 0:
-            return ""
-        content = text[start + len(marker_used) :].strip()
-        return content
-
-    def _summarize_inline_text(self, content: str) -> str:
-        cleaned_lines = []
-        for raw_line in content.splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            if len(line) > 700:
-                line = line[:700] + "..."
-            cleaned_lines.append(line)
-        if not cleaned_lines:
-            return "I did not find enough text to summarize."
-        return self.ollama.summarize_messages(cleaned_lines)
-
-    async def _handle_hackathon_query(self, update: Update, user_query: str) -> None:
+    async def attachment_message_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message:
             return
-        rows = self.db.fetch_recent_chat_messages(update.effective_chat.id, limit=300)
-        if not rows:
-            await update.message.reply_text("I do not have message history yet. Paste or forward hackathon posts first.")
+        if update.effective_chat.id != self.settings.personal_chat_id:
             return
 
-        corpus_lines: list[str] = []
-        for row in reversed(rows):
-            text = (row["text"] or "").strip()
-            if not text:
-                continue
-            if len(text) > 1000:
-                text = text[:1000] + "..."
-            corpus_lines.append(f"[{row['received_at_utc']}] {text}")
-
-        if not corpus_lines:
-            await update.message.reply_text("I do not have enough text content to answer that yet.")
+        caption = (update.message.caption or "").strip()
+        if not caption:
             return
 
-        prompt = (
-            "You are an assistant that extracts hackathon opportunities from chat history. "
-            "Use ONLY the content provided. If date range is requested, filter accordingly. "
-            "If unknown, say unknown. Return concise bullet points with: Name, Date/Time, Location, Link (if any).\n\n"
-            f"User question:\n{user_query}\n\n"
-            "Chat history:\n"
-            + "\n".join(corpus_lines[-180:])
+        await self.attachment_input_handler.handle_message(
+            update,
+            caption,
+            allow_current_attachment=True,
         )
-        answer = self.ollama.generate_text(prompt)
-        await update.message.reply_text(answer)
 
-    def _extract_due_and_priority(self, text: str) -> dict[str, str]:
-        priority_match = re.search(r"(?:p|priority)?\s*:?\s*(immediate|high|mid|low)\b", text, re.IGNORECASE)
-        priority = priority_match.group(1).lower() if priority_match else ""
+    def _load_vision_model_tags(self) -> set[str]:
+        raw = self.db.get_app_setting("ollama_vision_tags") or ""
+        tags = {part.strip() for part in raw.split(",") if part.strip()}
+        return tags
 
-        due_dt = None
-        found = search_dates(
-            text,
-            settings={
-                "TIMEZONE": self.settings.default_timezone,
-                "RETURN_AS_TIMEZONE_AWARE": True,
-                "PREFER_DATES_FROM": "future",
-            },
-        )
-        if found:
-            due_dt = found[-1][1]
-
-        due_utc = due_dt.astimezone(timezone.utc).isoformat() if due_dt else ""
-        return {
-            "priority": priority,
-            "due_at_utc": due_utc,
-        }
+    def _save_vision_model_tags(self) -> None:
+        serialized = ",".join(sorted(self.vision_model_tags))
+        self.db.set_app_setting("ollama_vision_tags", serialized)
 
     async def process_due_reminders(self) -> None:
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -581,6 +669,14 @@ class ReminderBot:
         deleted = self.db.delete_old_archived(self.settings.archive_retention_days)
         if deleted:
             LOGGER.info("Deleted %s archived reminders older than retention", deleted)
+
+    async def cleanup_messages(self) -> None:
+        retention_days = self.settings.message_retention_days
+        if retention_days <= 0:
+            return
+        deleted = self.db.delete_old_messages(retention_days)
+        if deleted:
+            LOGGER.info("Deleted %s stored messages older than %s days", deleted, retention_days)
 
     async def send_daily_digest(self) -> None:
         if not self.settings.personal_chat_id:
@@ -680,6 +776,61 @@ class ReminderBot:
             "priority": priority,
             "due_at_utc": due_utc,
             "recurrence": recurrence,
+        }
+
+    def _parse_edit_payload(self, payload: str) -> dict[str, str | None]:
+        text = payload.strip()
+
+        title: str | None = None
+        notes: str | None = None
+        priority: str | None = None
+        due_at_utc: str | None = None
+        recurrence: str | None = None
+
+        title_match = re.search(r"title\s*:\s*(.+?)(?=\s+(?:notes|p|priority|at|every)\s*:|$)", text, re.IGNORECASE)
+        if title_match:
+            title = title_match.group(1).strip()
+
+        notes_match = re.search(r"notes\s*:\s*(.+?)(?=\s+(?:title|p|priority|at|every)\s*:|$)", text, re.IGNORECASE)
+        if notes_match:
+            notes = notes_match.group(1).strip()
+
+        priority_match = re.search(r"(?:p|priority)\s*:\s*(immediate|high|mid|low)\b", text, re.IGNORECASE)
+        if priority_match:
+            priority = priority_match.group(1).lower()
+
+        recur_match = re.search(r"every\s*:\s*(daily|weekly|monthly|none)\b", text, re.IGNORECASE)
+        if recur_match:
+            recurrence = recur_match.group(1).lower()
+            if recurrence == "none":
+                recurrence = ""
+
+        at_match = re.search(r"at\s*:\s*(.+?)(?=\s+(?:title|notes|p|priority|every)\s*:|$)", text, re.IGNORECASE)
+        if at_match:
+            dt_text = at_match.group(1).strip()
+            due_dt = dateparser.parse(
+                dt_text,
+                settings={
+                    "TIMEZONE": self.settings.default_timezone,
+                    "RETURN_AS_TIMEZONE_AWARE": True,
+                    "PREFER_DATES_FROM": "future",
+                },
+            )
+            if due_dt is None:
+                return {"error": "Invalid date/time in at:. Example: at:tomorrow 9am"}
+            due_at_utc = due_dt.astimezone(timezone.utc).isoformat()
+
+        if not any(value is not None for value in (title, notes, priority, due_at_utc, recurrence)):
+            # Backward-compatible shorthand: /edit <id> <new title>
+            title = text
+
+        return {
+            "title": title,
+            "notes": notes,
+            "priority": priority,
+            "due_at_utc": due_at_utc,
+            "recurrence": recurrence,
+            "error": None,
         }
 
     def _compute_next_due(self, due_at_utc: str, recurrence: str) -> str | None:

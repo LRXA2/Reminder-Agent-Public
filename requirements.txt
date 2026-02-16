@@ -3,3 +3,5 @@ APScheduler==3.10.4
 dateparser==1.2.0
 python-dotenv==1.0.1
 requests==2.32.3
+pypdf==5.1.0
+faster-whisper==1.0.3

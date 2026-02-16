@@ -39,11 +39,19 @@ class Settings:
     db_path: str
     default_timezone: str
     archive_retention_days: int
+    message_retention_days: int
     ollama_base_url: str
     ollama_model: str
+    ollama_text_model: str
+    ollama_vision_model: str
     ollama_autostart: bool
     ollama_start_timeout_seconds: int
     ollama_use_highest_vram_gpu: bool
+    stt_provider: str
+    stt_model: str
+    stt_device: str
+    stt_compute_type: str
+    stt_use_highest_vram_gpu: bool
     digest_hour_utc: int
     digest_minute_utc: int
     digest_times_utc: Tuple[tuple[int, int], ...]
@@ -102,11 +110,19 @@ def get_settings() -> Settings:
         db_path=os.getenv("DB_PATH", "reminder_agent.db"),
         default_timezone=os.getenv("DEFAULT_TIMEZONE", "UTC"),
         archive_retention_days=_int_env("ARCHIVE_RETENTION_DAYS", 30),
+        message_retention_days=max(0, _int_env("MESSAGE_RETENTION_DAYS", 14)),
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
         ollama_model=os.getenv("OLLAMA_MODEL", "").strip(),
+        ollama_text_model=os.getenv("OLLAMA_TEXT_MODEL", "").strip(),
+        ollama_vision_model=os.getenv("OLLAMA_VISION_MODEL", "").strip(),
         ollama_autostart=_bool_env("OLLAMA_AUTOSTART", True),
         ollama_start_timeout_seconds=max(3, _int_env("OLLAMA_START_TIMEOUT_SECONDS", 20)),
         ollama_use_highest_vram_gpu=_bool_env("OLLAMA_USE_HIGHEST_VRAM_GPU", True),
+        stt_provider=os.getenv("STT_PROVIDER", "faster_whisper").strip().lower(),
+        stt_model=os.getenv("STT_MODEL", "large-v3").strip(),
+        stt_device=os.getenv("STT_DEVICE", "auto").strip().lower(),
+        stt_compute_type=os.getenv("STT_COMPUTE_TYPE", "auto").strip().lower(),
+        stt_use_highest_vram_gpu=_bool_env("STT_USE_HIGHEST_VRAM_GPU", True),
         digest_hour_utc=max(0, min(23, _int_env("DIGEST_HOUR_UTC", 9))),
         digest_minute_utc=max(0, min(59, _int_env("DIGEST_MINUTE_UTC", 0))),
         digest_times_utc=digest_times,

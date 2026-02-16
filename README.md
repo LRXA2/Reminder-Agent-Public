@@ -2,8 +2,6 @@
 
 Personal Telegram assistant for reminders, summaries, and lightweight planning.
 
-Current status: active prototype, with upcoming integrations in progress.
-
 ## Features
 
 - Create reminders from Telegram chat input
@@ -13,8 +11,11 @@ Current status: active prototype, with upcoming integrations in progress.
 - Auto-delete archived reminders after retention period
 - Summarize monitored group messages with local Ollama
 - Summarize pasted text in DM and convert to reminder with follow-up urgency/due date
+- Create reminders from image replies using a vision-capable Ollama model
+- Summarize DOCX/PDF attachments and create reminders from document content
+- Transcribe audio/voice messages locally with faster-whisper for summary + reminder drafting
 - Query reminder views: all, priority, date windows, overdue
-- Manage Ollama model from Telegram (`/models`, `/model`, `/status`)
+- Manage text + vision Ollama models from Telegram (`/models`, `/model`, `/status`)
 
 ## Tech Stack
 
@@ -23,6 +24,8 @@ Current status: active prototype, with upcoming integrations in progress.
 - `APScheduler`
 - `sqlite3` (built into Python)
 - `dateparser`
+- `pypdf`
+- `faster-whisper`
 - Ollama (local LLM)
 
 ## Project Structure
@@ -68,12 +71,21 @@ MONITORED_GROUP_CHAT_ID=0
 DB_PATH=reminder_agent.db
 DEFAULT_TIMEZONE=Asia/Singapore
 ARCHIVE_RETENTION_DAYS=30
+MESSAGE_RETENTION_DAYS=14
 
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=
+OLLAMA_TEXT_MODEL=
+OLLAMA_VISION_MODEL=
 OLLAMA_AUTOSTART=true
 OLLAMA_START_TIMEOUT_SECONDS=20
 OLLAMA_USE_HIGHEST_VRAM_GPU=true
+
+STT_PROVIDER=faster_whisper
+STT_MODEL=large-v3
+STT_DEVICE=auto
+STT_COMPUTE_TYPE=auto
+STT_USE_HIGHEST_VRAM_GPU=true
 
 DIGEST_TIMES_UTC=23:00,3:30,12:00
 ```
@@ -81,8 +93,14 @@ DIGEST_TIMES_UTC=23:00,3:30,12:00
 Notes:
 
 - `OLLAMA_MODEL` can be blank. Bot auto-picks first installed model.
+- `OLLAMA_TEXT_MODEL` overrides `OLLAMA_MODEL` for text tasks when set.
+- `OLLAMA_VISION_MODEL` controls image understanding; falls back to active text model if blank.
 - `DIGEST_TIMES_UTC` uses UTC times.
 - If you are DM-only for now, keep `MONITORED_GROUP_CHAT_ID=0`.
+- `MESSAGE_RETENTION_DAYS` controls how long stored chat messages are kept before auto-deletion.
+- `STT_PROVIDER=faster_whisper` enables local transcription for audio/voice attachments.
+- `STT_MODEL=large-v3` is accuracy-first and can be heavy on CPU.
+- `STT_USE_HIGHEST_VRAM_GPU=true` selects the Nvidia GPU with the largest VRAM first.
 
 ## Ollama Setup
 
@@ -100,6 +118,25 @@ You can run `ollama serve` manually, or let bot autostart it (`OLLAMA_AUTOSTART=
 python main.py
 ```
 
+## Test Speech-to-Text (Without Bot)
+
+Use the local STT test script first:
+
+```bash
+python scripts/test_stt.py
+```
+
+It will prompt for audio file path. You can also pass it directly:
+
+```bash
+python scripts/test_stt.py --file "D:\Aarron\Recording.m4a" --device cuda --compute-type float16
+```
+
+Useful options:
+
+- `--highest-vram-gpu` picks the Nvidia GPU with largest VRAM
+- `--device cpu --compute-type int8` forces CPU fallback
+
 DB file is created automatically on first run (`DB_PATH`, default `reminder_agent.db`).
 
 ## Commands
@@ -108,6 +145,10 @@ DB file is created automatically on first run (`DB_PATH`, default `reminder_agen
 - `/add Pay rent p:high at:tomorrow 9am`
 - `/add Standup prep p:mid at:8am every:daily`
 - `/done 12`
+- `/edit 12 p:high at:tomorrow 9am`
+- `/edit 12 title:Review ASAVC(M) details notes:Bring Smart No.4 every:none`
+- `/delete 12`
+- `/detail 12`
 - `/list all`
 - `/list priority high`
 - `/list due 14d`
@@ -117,18 +158,47 @@ DB file is created automatically on first run (`DB_PATH`, default `reminder_agen
 - `/summary`
 - `/models`
 - `/model`
-- `/model mistral-small3.2:24b`
+- `/model mistral-small3.2:24b` (set text model)
+- `/model text mistral-small3.2:24b`
+- `/model vision mistral-small3.2:24b`
+- `/model tag mistral-small3.2:24b vision`
+- `/model untag mistral-small3.2:24b vision`
 - `/status`
+
+Image reminder flow in DM:
+
+- Send an image with caption like `remind me high tomorrow 9am`, or
+- Reply to an image with something like `remind me high tomorrow 9am`
+- You can also ask `summarize this image` (caption or reply), with optional reminder details
+- Attachment routing is now generic (image/docx/audio), with full AI extraction currently enabled for images
+- For DOCX/PDF, use captions or replies like `summarize this document` or `create reminder low tomorrow 9am`
+- For audio/voice, use captions or replies like `summarize this audio` or `create reminders from this recording`
 
 Natural-language shortcuts in DM:
 
 - `help me summarize <pasted text>`
 - `summarize for me <pasted text>`
+- `add as reminder high tomorrow 9am` (as a reply to an existing message)
+- `set to tomorrow 8am high` (as a reply to a reminder card that contains `ID:`)
 - `what hackathons are available on 1 Mar - 15 Mar`
+
+For summary/image/document flows, reminder creation is now draft-first:
+
+- Bot proposes one or more reminder drafts
+- You review/edit first
+- Reply with `confirm`, `confirm 1,3`, `edit <n> ...`, `remove <n>`, or `cancel`
+
+Reminder creation response format is standardized as:
+
+- `ID: <id>`
+- `Title: <title>`
+- `Date: dd/mm/yy [HH:mm]`
+
+Use `/detail <id>` to view full reminder notes/details.
 
 ## How Reminder Flow Works
 
-- Inbound Telegram messages are stored in SQLite.
+- Inbound messages are stored selectively (monitored group only, plus personal chat messages that look hackathon-related).
 - Router decides command vs intent.
 - Reminder parser extracts task, priority, and datetime.
 - Scheduler checks due reminders every 30 seconds and sends notifications.
@@ -141,9 +211,9 @@ Natural-language shortcuts in DM:
 - `ModuleNotFoundError`: run `python -m pip install -r requirements.txt`.
 - `ollama serve ... address already in use`: Ollama is already running, continue.
 - No group summaries: ensure bot has access and set `MONITORED_GROUP_CHAT_ID`.
+- STT GPU error `cublas64_12.dll is not found`: install CUDA 12.x (not only 11.x/13.x). The app/test script already tries to register CUDA 12 DLL dirs automatically on Windows.
+- To verify CUDA DLL manually on Windows:
 
-## In Progress
-
-- Google Calendar integration (OAuth + event sync into reminder timeline)
-- Image input summarization (OCR pipeline for posters/screenshots)
-- Audio input summarization (speech-to-text transcription before summarization)
+```bash
+python -c "import os,ctypes; os.add_dll_directory(r'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\bin'); ctypes.CDLL('cublas64_12.dll'); print('cublas OK')"
+```

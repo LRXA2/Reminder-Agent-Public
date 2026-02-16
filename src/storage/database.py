@@ -24,6 +24,7 @@ class Database:
 
     def _init_schema(self) -> None:
         statements = [
+            "DROP TABLE IF EXISTS jobs;",
             """
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -78,16 +79,6 @@ class Database:
                 window_start_utc TEXT NOT NULL,
                 window_end_utc TEXT NOT NULL,
                 summary_text TEXT NOT NULL,
-                created_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS jobs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                job_type TEXT NOT NULL,
-                dedupe_key TEXT UNIQUE,
-                status TEXT NOT NULL,
-                payload_json TEXT,
                 created_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             """,
@@ -235,6 +226,48 @@ class Database:
         )
         return cursor.rowcount > 0
 
+    def delete_reminder_permanently(self, reminder_id: int) -> bool:
+        cursor = self._execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+        return cursor.rowcount > 0
+
+    def get_reminder_by_id(self, reminder_id: int) -> sqlite3.Row | None:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT id, title, notes, priority, due_at_utc, status, source_kind, recurrence_rule, created_at_utc, updated_at_utc
+                FROM reminders
+                WHERE id = ?
+                """,
+                (reminder_id,),
+            ).fetchone()
+        return row
+
+    def update_reminder_fields(
+        self,
+        reminder_id: int,
+        title: str,
+        notes: str,
+        priority: str,
+        due_at_utc: str,
+        recurrence_rule: str | None,
+    ) -> bool:
+        now = datetime.now(timezone.utc).isoformat()
+        normalized_priority = priority if priority in PRIORITY_RANK else "mid"
+        cursor = self._execute(
+            """
+            UPDATE reminders
+            SET title = ?,
+                notes = ?,
+                priority = ?,
+                due_at_utc = ?,
+                recurrence_rule = ?,
+                updated_at_utc = ?
+            WHERE id = ?
+            """,
+            (title, notes, normalized_priority, due_at_utc, recurrence_rule, now, reminder_id),
+        )
+        return cursor.rowcount > 0
+
     def list_reminders(self, mode: str, value: str | None = None) -> list[sqlite3.Row]:
         base = """
             SELECT id, title, priority, due_at_utc, status
@@ -309,6 +342,14 @@ class Database:
         cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
         cursor = self._execute(
             "DELETE FROM reminders WHERE status='archived' AND archived_at_utc IS NOT NULL AND archived_at_utc < ?",
+            (cutoff.isoformat(),),
+        )
+        return int(cursor.rowcount)
+
+    def delete_old_messages(self, retention_days: int) -> int:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+        cursor = self._execute(
+            "DELETE FROM messages WHERE received_at_utc < ?",
             (cutoff.isoformat(),),
         )
         return int(cursor.rowcount)
