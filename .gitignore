@@ -22,7 +22,7 @@ __pycache__/
 *.sqlite
 *.sqlite3
 *.db-wal
-*.db-shm.
+*.db-shm
 
 # Notebook checkpoints
 .ipynb_checkpoints/
