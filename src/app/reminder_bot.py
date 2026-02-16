@@ -18,7 +18,11 @@ from telegram.ext import (
 
 from src.app.handlers.attachment_input_handler import AttachmentInputHandler
 from src.app.handlers.reminder_draft_manager import ReminderDraftManager
-from src.app.handlers.reminder_formatting import format_due_display, format_reminder_brief, format_reminder_detail
+from src.app.handlers.reminder_formatting import (
+    format_reminder_brief,
+    format_reminder_detail,
+    format_reminder_list_item,
+)
 from src.app.handlers.text_input_handler import TextInputHandler
 from src.clients.ollama_client import OllamaClient
 from src.clients.stt_client import SttClient
@@ -165,7 +169,7 @@ class ReminderBot:
         )
         if not ollama_ready:
             LOGGER.warning("Ollama is not reachable at %s", settings.ollama_base_url)
-        self.scheduler = AsyncIOScheduler(timezone="UTC")
+        self.scheduler = AsyncIOScheduler(timezone=self.settings.default_timezone)
         self.app = Application.builder().token(settings.telegram_bot_token).build()
         self.stt = SttClient(self.settings)
         self.reminder_draft_manager = ReminderDraftManager(self.db, self.ollama, self.settings)
@@ -206,7 +210,9 @@ class ReminderBot:
         self.scheduler.add_job(self.process_due_reminders, "interval", seconds=30)
         self.scheduler.add_job(self.cleanup_archives, "cron", hour=1, minute=0)
         self.scheduler.add_job(self.cleanup_messages, "cron", hour=1, minute=15)
-        digest_times = self.settings.digest_times_utc or ((self.settings.digest_hour_utc, self.settings.digest_minute_utc),)
+        digest_times = self.settings.digest_times_local or (
+            (self.settings.digest_hour_local, self.settings.digest_minute_local),
+        )
         seen: set[tuple[int, int]] = set()
         for hour, minute in digest_times:
             if (hour, minute) in seen:
@@ -445,12 +451,11 @@ class ReminderBot:
             return
 
         lines = ["Open reminders:"]
-        for row in rows[:50]:
-            due_display = format_due_display(str(row["due_at_utc"]), self.settings.default_timezone)
-            lines.append(
-                f"#{row['id']} [{row['priority'].upper()}] {row['title']} - {due_display}"
-            )
-        await update.message.reply_text("\n".join(lines))
+        for idx, row in enumerate(rows[:30], start=1):
+            lines.append(format_reminder_list_item(idx, dict(row), self.settings.default_timezone))
+        if len(rows) > 30:
+            lines.append(f"...and {len(rows) - 30} more. Use /list due 14d or /list priority high to narrow.")
+        await update.message.reply_text("\n\n".join(lines))
 
     async def summary_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message:
@@ -682,11 +687,15 @@ class ReminderBot:
         if not self.settings.personal_chat_id:
             return
         lines = ["Daily digest"]
-        tomorrow_items = self.db.list_reminders("due_days", "1")
-        if tomorrow_items:
-            lines.append("Tomorrow / next 24h reminders:")
-            for row in tomorrow_items[:10]:
-                lines.append(f"- #{row['id']} [{row['priority']}] {row['title']} @ {row['due_at_utc']}")
+        all_items = self.db.list_reminders("all")
+        if all_items:
+            lines.append("All open reminders:")
+            for idx, row in enumerate(all_items[:20], start=1):
+                lines.append(format_reminder_list_item(idx, dict(row), self.settings.default_timezone))
+            if len(all_items) > 20:
+                lines.append(f"...and {len(all_items) - 20} more.")
+        else:
+            lines.append("All open reminders: none")
 
         if self.settings.monitored_group_chat_id:
             summary = await self._build_group_summary(save=False)

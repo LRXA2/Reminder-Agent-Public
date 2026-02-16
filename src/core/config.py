@@ -52,9 +52,9 @@ class Settings:
     stt_device: str
     stt_compute_type: str
     stt_use_highest_vram_gpu: bool
-    digest_hour_utc: int
-    digest_minute_utc: int
-    digest_times_utc: Tuple[tuple[int, int], ...]
+    digest_hour_local: int
+    digest_minute_local: int
+    digest_times_local: Tuple[tuple[int, int], ...]
 
 
 def _int_env(name: str, default: int) -> int:
@@ -90,7 +90,7 @@ def _parse_digest_times(value: str) -> Tuple[tuple[int, int], ...]:
             hour = int(part)
             minute = 0
         if hour < 0 or hour > 23 or minute < 0 or minute > 59:
-            raise ValueError(f"Invalid DIGEST_TIMES_UTC time: {part}")
+            raise ValueError(f"Invalid DIGEST_TIMES_LOCAL time: {part}")
         times.append((hour, minute))
     return tuple(times)
 
@@ -100,7 +100,9 @@ def get_settings() -> Settings:
     if not token:
         raise ValueError("Missing TELEGRAM_BOT_TOKEN in environment.")
 
-    digest_times_raw = os.getenv("DIGEST_TIMES_UTC", "").strip()
+    digest_times_raw = os.getenv("DIGEST_TIMES_LOCAL", "").strip()
+    if not digest_times_raw:
+        digest_times_raw = os.getenv("DIGEST_TIMES_UTC", "").strip()
     digest_times = _parse_digest_times(digest_times_raw) if digest_times_raw else tuple()
 
     return Settings(
@@ -123,7 +125,7 @@ def get_settings() -> Settings:
         stt_device=os.getenv("STT_DEVICE", "auto").strip().lower(),
         stt_compute_type=os.getenv("STT_COMPUTE_TYPE", "auto").strip().lower(),
         stt_use_highest_vram_gpu=_bool_env("STT_USE_HIGHEST_VRAM_GPU", True),
-        digest_hour_utc=max(0, min(23, _int_env("DIGEST_HOUR_UTC", 9))),
-        digest_minute_utc=max(0, min(59, _int_env("DIGEST_MINUTE_UTC", 0))),
-        digest_times_utc=digest_times,
+        digest_hour_local=max(0, min(23, _int_env("DIGEST_HOUR_LOCAL", _int_env("DIGEST_HOUR_UTC", 9)))),
+        digest_minute_local=max(0, min(59, _int_env("DIGEST_MINUTE_LOCAL", _int_env("DIGEST_MINUTE_UTC", 0)))),
+        digest_times_local=digest_times,
     )

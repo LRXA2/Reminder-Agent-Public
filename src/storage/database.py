@@ -299,7 +299,11 @@ class Database:
             base += " AND due_at_utc >= ? AND due_at_utc <= ?"
             params.extend([now.isoformat(), end.isoformat()])
 
-        base += " ORDER BY CASE priority WHEN 'immediate' THEN 4 WHEN 'high' THEN 3 WHEN 'mid' THEN 2 ELSE 1 END DESC, due_at_utc ASC"
+        base += (
+            " ORDER BY due_at_utc ASC, "
+            "CASE priority WHEN 'immediate' THEN 4 WHEN 'high' THEN 3 WHEN 'mid' THEN 2 ELSE 1 END DESC, "
+            "id ASC"
+        )
 
         with self._lock:
             return list(self._conn.execute(base, tuple(params)).fetchall())

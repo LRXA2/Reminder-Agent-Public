@@ -87,7 +87,7 @@ STT_DEVICE=auto
 STT_COMPUTE_TYPE=auto
 STT_USE_HIGHEST_VRAM_GPU=true
 
-DIGEST_TIMES_UTC=23:00,3:30,12:00
+DIGEST_TIMES_LOCAL=23:00,3:30,12:00
 ```
 
 Notes:
@@ -95,7 +95,8 @@ Notes:
 - `OLLAMA_MODEL` can be blank. Bot auto-picks first installed model.
 - `OLLAMA_TEXT_MODEL` overrides `OLLAMA_MODEL` for text tasks when set.
 - `OLLAMA_VISION_MODEL` controls image understanding; falls back to active text model if blank.
-- `DIGEST_TIMES_UTC` uses UTC times.
+- `DIGEST_TIMES_LOCAL` follows `DEFAULT_TIMEZONE`.
+- Legacy UTC digest env names are still read as fallback (`DIGEST_TIMES_UTC`, `DIGEST_HOUR_UTC`, `DIGEST_MINUTE_UTC`).
 - If you are DM-only for now, keep `MONITORED_GROUP_CHAT_ID=0`.
 - `MESSAGE_RETENTION_DAYS` controls how long stored chat messages are kept before auto-deletion.
 - `STT_PROVIDER=faster_whisper` enables local transcription for audio/voice attachments.

@@ -30,6 +30,20 @@ def format_reminder_detail(row: dict, timezone_name: str) -> str:
     return "\n".join(lines)
 
 
+def format_reminder_list_item(index: int, row: dict, timezone_name: str) -> str:
+    reminder_id = row.get("id")
+    title = (row.get("title") or "").strip()
+    priority = str(row.get("priority") or "").upper()
+    due_display = format_due_display(str(row.get("due_at_utc") or ""), timezone_name)
+    return "\n".join(
+        [
+            f"{index}) #{reminder_id} {title}",
+            f"   Date: {due_display}",
+            f"   Priority: {priority}",
+        ]
+    )
+
+
 def format_due_display(due_at_utc: str, timezone_name: str) -> str:
     if not due_at_utc:
         return "(none)"
