@@ -8,7 +8,10 @@ from datetime import timezone
 import dateparser
 from telegram import Update
 
+from src.app.handlers.operation_status import OperationStatus
 from src.app.handlers.reminder_formatting import format_due_display, format_reminder_brief
+from src.app.messages import msg
+from src.app.prompts import draft_reminder_prompt
 from src.clients.ollama_client import OllamaClient
 from src.core.config import Settings
 from src.storage.database import Database
@@ -18,6 +21,7 @@ from src.storage.database import Database
 class ReminderDraft:
     title: str
     notes: str
+    link: str
     priority: str
     due_at_utc: str
 
@@ -31,10 +35,11 @@ class PendingDraftBatch:
 
 
 class ReminderDraftManager:
-    def __init__(self, db: Database, ollama: OllamaClient, settings: Settings):
+    def __init__(self, db: Database, ollama: OllamaClient, settings: Settings, run_gpu_task):
         self.db = db
         self.ollama = ollama
         self.settings = settings
+        self.run_gpu_task = run_gpu_task
         self.pending_by_chat: dict[int, PendingDraftBatch] = {}
 
     async def propose_from_text(self, update: Update, source_kind: str, content: str, user_instruction: str) -> bool:
@@ -42,17 +47,18 @@ class ReminderDraftManager:
             return False
         chat_id = update.effective_chat.id
 
-        await update.message.reply_text("Analyzing content and drafting reminders...")
+        await OperationStatus.started(update, "Analyzing content and drafting reminders...")
         try:
-            payload = self._extract_drafts_from_content(content, user_instruction)
+            payload = await self._extract_drafts_from_content(content, user_instruction)
             if not payload.get("appropriate"):
                 reason = (payload.get("reason") or "No reminder-worthy items were detected.").strip()
-                await update.message.reply_text(f"Done. I found no reminders to suggest. {reason}")
+                await OperationStatus.done(update, f"Done. I found no reminders to suggest. {reason}")
                 return True
 
             parsed_drafts = self._build_drafts(payload.get("reminders") or [], content)
             if not parsed_drafts:
-                await update.message.reply_text(
+                await OperationStatus.done(
+                    update,
                     "Done, but I could not extract valid reminder drafts yet. "
                     "You can still create one with /add or reply with exact details."
                 )
@@ -64,11 +70,11 @@ class ReminderDraftManager:
                 username=update.effective_user.username,
                 drafts=parsed_drafts,
             )
-            await update.message.reply_text("Done. Please review the draft reminders below.")
+            await OperationStatus.done(update, "Done. Please review the draft reminders below.")
             await update.message.reply_text(self._render_batch(chat_id))
             return True
         except Exception as exc:
-            await update.message.reply_text(f"I hit an error while drafting reminders: {exc}")
+            await OperationStatus.error(update, f"I hit an error while drafting reminders: {exc}")
             return True
 
     async def handle_followup(self, update: Update, text: str) -> bool:
@@ -90,7 +96,7 @@ class ReminderDraftManager:
         }
         if lowered in {"cancel", "skip", "discard", "no"}:
             self.pending_by_chat.pop(chat_id, None)
-            await update.message.reply_text("Okay, discarded draft reminders.")
+            await update.message.reply_text(msg("draft_discarded"))
             return True
 
         if lowered in {"show", "list", "preview"}:
@@ -101,7 +107,7 @@ class ReminderDraftManager:
             indices = self._parse_indices(lowered)
             selected = self._select_drafts(batch.drafts, indices)
             if selected is None:
-                await update.message.reply_text("Invalid draft selection. Example: confirm 1,3")
+                await update.message.reply_text(msg("draft_invalid_selection"))
                 return True
 
             missing = [
@@ -116,7 +122,7 @@ class ReminderDraftManager:
                 )
                 return True
 
-            await update.message.reply_text("Saving selected reminders...")
+            await OperationStatus.started(update, "Saving selected reminders...")
             try:
                 lines: list[str] = []
                 for draft in selected:
@@ -125,10 +131,11 @@ class ReminderDraftManager:
                         user_id=app_user_id,
                         source_message_id=None,
                         source_kind=batch.source_kind,
-                        title=draft.title,
-                        notes=draft.notes,
-                        priority=draft.priority,
-                        due_at_utc=draft.due_at_utc,
+                    title=draft.title,
+                    notes=draft.notes,
+                    link=draft.link,
+                    priority=draft.priority,
+                    due_at_utc=draft.due_at_utc,
                         timezone_name=self.settings.default_timezone,
                         chat_id_to_notify=chat_id,
                         recurrence_rule=None,
@@ -138,21 +145,21 @@ class ReminderDraftManager:
                     )
 
                 self.pending_by_chat.pop(chat_id, None)
-                await update.message.reply_text("Done. Saved reminders:")
+                await OperationStatus.done(update, "Done. Saved reminders:")
                 await update.message.reply_text("\n\n".join(lines))
             except Exception as exc:
-                await update.message.reply_text(f"I hit an error while saving reminders: {exc}")
+                await OperationStatus.error(update, f"I hit an error while saving reminders: {exc}")
             return True
 
         if lowered.startswith("remove "):
             indices = self._parse_indices(lowered)
             if not indices:
-                await update.message.reply_text("Usage: remove <n> or remove 1,3")
+                await update.message.reply_text(msg("draft_remove_usage"))
                 return True
             new_drafts = [draft for i, draft in enumerate(batch.drafts, start=1) if i not in set(indices)]
             if not new_drafts:
                 self.pending_by_chat.pop(chat_id, None)
-                await update.message.reply_text("All draft reminders removed.")
+                await update.message.reply_text(msg("draft_removed_all"))
                 return True
             batch.drafts = new_drafts
             await update.message.reply_text(self._render_batch(chat_id))
@@ -168,7 +175,7 @@ class ReminderDraftManager:
             "Try one of these:\n"
             "- confirm\n"
             "- confirm 1,3\n"
-            "- edit 2 title:... p:high at:tomorrow 9am\n"
+            "- edit 2 title:... p:high at:tomorrow 9am link:https://...\n"
             "- remove 2\n"
             "- show\n"
             "- cancel"
@@ -182,7 +189,7 @@ class ReminderDraftManager:
 
         match = re.match(r"edit\s+(\d+)\s+(.+)$", text.strip(), re.IGNORECASE)
         if not match:
-            return False, "Usage: edit <n> title:<...> p:<...> at:<...> notes:<...>"
+            return False, "Usage: edit <n> title:<...> p:<...> at:<...> notes:<...> link:<...>"
 
         idx = int(match.group(1))
         if idx < 1 or idx > len(batch.drafts):
@@ -192,13 +199,16 @@ class ReminderDraftManager:
 
         title = self._extract_field(edits_text, "title")
         notes = self._extract_field(edits_text, "notes")
+        link = self._extract_field(edits_text, "link")
         priority_match = re.search(r"(?:p|priority)\s*:\s*(immediate|high|mid|low)\b", edits_text, re.IGNORECASE)
-        at_match = re.search(r"at\s*:\s*(.+?)(?=\s+(?:title|notes|p|priority)\s*:|$)", edits_text, re.IGNORECASE)
+        at_match = re.search(r"at\s*:\s*(.+?)(?=\s+(?:title|notes|link|p|priority)\s*:|$)", edits_text, re.IGNORECASE)
 
         if title is not None:
             draft.title = title
         if notes is not None:
             draft.notes = notes
+        if link is not None:
+            draft.link = link
         if priority_match:
             draft.priority = priority_match.group(1).lower()
         if at_match:
@@ -210,7 +220,7 @@ class ReminderDraftManager:
         return True, self._render_batch(chat_id)
 
     def _extract_field(self, text: str, field_name: str) -> str | None:
-        pattern = rf"{field_name}\s*:\s*(.+?)(?=\s+(?:title|notes|p|priority|at)\s*:|$)"
+        pattern = rf"{field_name}\s*:\s*(.+?)(?=\s+(?:title|notes|link|p|priority|at)\s*:|$)"
         match = re.search(pattern, text, re.IGNORECASE)
         if not match:
             return None
@@ -237,28 +247,21 @@ class ReminderDraftManager:
             lines.append(
                 f"{i}) {draft.title} | {format_due_display(draft.due_at_utc, self.settings.default_timezone)} | {draft.priority}"
             )
+            if draft.link:
+                lines.append(f"   Link: {draft.link}")
         lines.append("")
         lines.append("What do you want to do?")
         lines.append("- Save all: confirm")
         lines.append("- Save selected: confirm 1,3")
-        lines.append("- Edit one: edit 2 title:Submit concept p:high at:28 feb 11am")
+        lines.append("- Edit one: edit 2 title:Submit concept p:high at:28 feb 11am link:https://...")
         lines.append("- Remove one: remove 2")
         lines.append("- Show list again: show")
         lines.append("- Cancel all: cancel")
         return "\n".join(lines)
 
-    def _extract_drafts_from_content(self, content: str, user_instruction: str) -> dict:
-        prompt = (
-            "You are a reminder planner. Determine if reminders are appropriate from the provided summary/content. "
-            "Return STRICT JSON ONLY in this schema: "
-            '{"appropriate": true|false, "reason": "...", "reminders": ['
-            '{"title":"...","notes":"...","priority":"immediate|high|mid|low","due_text":"..."}]}. '
-            "Rules: suggest 0-5 reminders max; title actionable 3-12 words; notes <= 280 chars; "
-            "do not use generic titles like Summary; only include reminders with clear actionable tasks. "
-            "If due date is unclear, set due_text to empty string."
-            f"\nUser instruction: {user_instruction}\n\nContent:\n{content[:22000]}"
-        )
-        raw = self.ollama.generate_text(prompt)
+    async def _extract_drafts_from_content(self, content: str, user_instruction: str) -> dict:
+        prompt = draft_reminder_prompt(user_instruction, content)
+        raw = await self.run_gpu_task(self.ollama.generate_text, prompt)
         parsed = self._parse_json_object(raw)
         if not parsed:
             return {"appropriate": False, "reason": "Could not parse reminder suggestions.", "reminders": []}
@@ -278,13 +281,22 @@ class ReminderDraftManager:
             notes = str(raw.get("notes") or "").strip()[:280]
             if not notes:
                 notes = fallback_notes[:280]
+            link = str(raw.get("link") or "").strip()
+            if not link:
+                link = self._extract_first_url(notes) or self._extract_first_url(fallback_notes) or ""
             priority = str(raw.get("priority") or "mid").lower().strip()
             if priority not in {"immediate", "high", "mid", "low"}:
                 priority = "mid"
             due_text = str(raw.get("due_text") or "").strip()
             due_at_utc = self._parse_due_to_utc(due_text) if due_text else ""
-            drafts.append(ReminderDraft(title=title, notes=notes, priority=priority, due_at_utc=due_at_utc))
+            drafts.append(ReminderDraft(title=title, notes=notes, link=link, priority=priority, due_at_utc=due_at_utc))
         return drafts
+
+    def _extract_first_url(self, text: str) -> str:
+        match = re.search(r"https?://\S+", text)
+        if not match:
+            return ""
+        return match.group(0).rstrip(").,]")
 
     def _parse_due_to_utc(self, due_text: str) -> str:
         if not due_text:

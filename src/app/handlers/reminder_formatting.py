@@ -16,6 +16,7 @@ def format_reminder_brief(reminder_id: int, title: str, due_at_utc: str, timezon
 
 def format_reminder_detail(row: dict, timezone_name: str) -> str:
     notes = (row.get("notes") or "").strip()
+    link = (row.get("link") or "").strip()
     lines = [
         f"ID: {row.get('id')}",
         f"Title: {row.get('title') or ''}",
@@ -24,6 +25,8 @@ def format_reminder_detail(row: dict, timezone_name: str) -> str:
         f"Status: {row.get('status') or ''}",
         f"Source: {row.get('source_kind') or ''}",
     ]
+    if link:
+        lines.append(f"Link: {link}")
     if notes:
         lines.append("Details:")
         lines.append(notes)

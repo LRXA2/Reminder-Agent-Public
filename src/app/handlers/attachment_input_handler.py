@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import logging
 import re
+import subprocess
+import tempfile
 import zipfile
 from dataclasses import dataclass
 from io import BytesIO
+from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from telegram import Message, Update
@@ -16,7 +19,10 @@ from src.app.handlers.intent_parsing import (
     has_reminder_intent,
     has_summary_intent,
 )
+from src.app.messages import msg
+from src.app.handlers.operation_status import OperationStatus
 from src.app.handlers.reminder_draft_manager import ReminderDraftManager
+from src.app.prompts import audio_transcript_summary_prompt, document_reminder_extract_prompt, document_summary_prompt
 from src.clients.ollama_client import OllamaClient
 from src.clients.stt_client import SttClient
 from src.core.config import Settings
@@ -43,6 +49,7 @@ class AttachmentInputHandler:
         stt: SttClient,
         settings: Settings,
         draft_manager: ReminderDraftManager,
+        run_gpu_task,
     ):
         self.app = app
         self.db = db
@@ -50,6 +57,7 @@ class AttachmentInputHandler:
         self.stt = stt
         self.settings = settings
         self.draft_manager = draft_manager
+        self.run_gpu_task = run_gpu_task
 
     async def handle_message(self, update: Update, text: str, allow_current_attachment: bool) -> bool:
         if not update.message or not update.effective_user:
@@ -93,18 +101,18 @@ class AttachmentInputHandler:
             return True
 
         if wants_summary:
-            await update.message.reply_text("Got it - analyzing image now...")
+            await OperationStatus.started(update, "Got it - analyzing image now...")
         elif create_reminder_requested:
-            await update.message.reply_text("Got it - analyzing image and drafting reminders...")
+            await OperationStatus.started(update, "Got it - analyzing image and drafting reminders...")
 
         image_bytes = await self._download_file_bytes(attachment.file_id)
         if not image_bytes:
-            await update.message.reply_text("I could not download that image. Please try again.")
+            await update.message.reply_text(msg("error_download_image"))
             return True
 
         summary_text = ""
         if wants_summary or create_reminder_requested:
-            summary_text = self.ollama.summarize_image(image_bytes=image_bytes, user_instruction=text)
+            summary_text = await self.run_gpu_task(self.ollama.summarize_image, image_bytes, text)
         if wants_summary and summary_text:
             await update.message.reply_text(summary_text)
 
@@ -125,13 +133,13 @@ class AttachmentInputHandler:
         create_reminder_requested: bool,
     ) -> None:
         if wants_summary:
-            await update.message.reply_text("Got it - reading and summarizing this document now...")
+            await OperationStatus.started(update, "Got it - reading and summarizing this document now...")
         elif create_reminder_requested:
-            await update.message.reply_text("Got it - reading this document and creating your reminder...")
+            await OperationStatus.started(update, "Got it - reading this document and drafting reminders...")
 
         file_bytes = await self._download_file_bytes(attachment.file_id)
         if not file_bytes:
-            await update.message.reply_text("I could not download that document. Please try again.")
+            await update.message.reply_text(msg("error_download_doc"))
             return
 
         document_text = self._extract_document_text(attachment, file_bytes)
@@ -144,7 +152,7 @@ class AttachmentInputHandler:
 
         summary_text = ""
         if wants_summary or create_reminder_requested:
-            summary_text = self._summarize_document_text(document_text, text, attachment)
+            summary_text = await self.run_gpu_task(self._summarize_document_text, document_text, text, attachment)
         if wants_summary and summary_text:
             await update.message.reply_text(summary_text)
 
@@ -164,16 +172,35 @@ class AttachmentInputHandler:
         create_reminder_requested: bool,
     ) -> None:
         if wants_summary:
-            await update.message.reply_text("Got it - transcribing and summarizing this audio now...")
+            await OperationStatus.started(update, "Got it - transcribing and summarizing this audio now...")
         elif create_reminder_requested:
-            await update.message.reply_text("Got it - transcribing audio and drafting reminders...")
+            await OperationStatus.started(update, "Got it - transcribing audio and drafting reminders...")
 
         audio_bytes = await self._download_file_bytes(attachment.file_id)
         if not audio_bytes:
-            await update.message.reply_text("I could not download that audio file. Please try again.")
+            await update.message.reply_text(msg("error_download_audio"))
             return
 
-        transcript = self.stt.transcribe_bytes(audio_bytes, attachment.file_name)
+        stt_bytes = audio_bytes
+        stt_file_name = attachment.file_name or "audio.ogg"
+        if self._is_mp4_media(attachment):
+            await update.message.reply_text(msg("status_extract_mp4"))
+            if not self._has_ffmpeg():
+                await update.message.reply_text(
+                    "MP4 audio extraction requires ffmpeg, but it is not installed or not in PATH. "
+                    "Install ffmpeg and try again."
+                )
+                return
+            converted = self._convert_mp4_to_wav(audio_bytes)
+            if converted is None:
+                await update.message.reply_text(
+                    "I could not extract audio from that MP4. Please install ffmpeg and try again."
+                )
+                return
+            stt_bytes = converted
+            stt_file_name = "converted_audio.wav"
+
+        transcript = await self.run_gpu_task(self.stt.transcribe_bytes, stt_bytes, stt_file_name)
         if not transcript:
             reason = self.stt.disabled_reason()
             message = "I could not transcribe that audio yet."
@@ -184,12 +211,8 @@ class AttachmentInputHandler:
 
         transcript = transcript.strip()
         if wants_summary:
-            summary_prompt = (
-                "Summarize this transcript for reminders. Return concise markdown with Key points, "
-                "Deadlines/Dates, and Action items.\n\n"
-                f"User request: {text}\n\nTranscript:\n{transcript[:22000]}"
-            )
-            summary = self.ollama.generate_text(summary_prompt)
+            summary_prompt = audio_transcript_summary_prompt(text, transcript)
+            summary = await self.run_gpu_task(self.ollama.generate_text, summary_prompt)
             await update.message.reply_text(summary)
             content_for_draft = summary
         else:
@@ -230,6 +253,13 @@ class AttachmentInputHandler:
             name = (message.audio.file_name or "audio").strip()
             return AttachmentRef(kind="audio", file_id=message.audio.file_id, mime_type=mime, file_name=name)
 
+        if message.video:
+            mime = (message.video.mime_type or "video/mp4").lower()
+            return AttachmentRef(kind="audio", file_id=message.video.file_id, mime_type=mime, file_name="video.mp4")
+
+        if message.video_note:
+            return AttachmentRef(kind="audio", file_id=message.video_note.file_id, mime_type="video/mp4", file_name="video_note.mp4")
+
         document = message.document
         if not document:
             return None
@@ -243,6 +273,8 @@ class AttachmentInputHandler:
             return AttachmentRef(kind="docx", file_id=document.file_id, mime_type=mime_type, file_name=file_name)
         if mime_type == "application/pdf" or file_name.lower().endswith(".pdf"):
             return AttachmentRef(kind="pdf", file_id=document.file_id, mime_type=mime_type, file_name=file_name)
+        if mime_type == "video/mp4" or file_name.lower().endswith(".mp4"):
+            return AttachmentRef(kind="audio", file_id=document.file_id, mime_type=mime_type, file_name=file_name)
         if mime_type.startswith("audio/"):
             return AttachmentRef(kind="audio", file_id=document.file_id, mime_type=mime_type, file_name=file_name)
         return None
@@ -303,13 +335,7 @@ class AttachmentInputHandler:
 
     def _summarize_document_text(self, document_text: str, user_instruction: str, attachment: AttachmentRef) -> str:
         excerpt = self._clip_text(document_text, 18000)
-        prompt = (
-            f"Summarize this {attachment.kind.upper()} for a reminder assistant. "
-            "Return concise markdown with: Key points, Deadlines/Dates, Action items. "
-            f"User request: {user_instruction}\n\n"
-            "Document content:\n"
-            f"{excerpt}"
-        )
+        prompt = document_summary_prompt(attachment.kind, user_instruction, excerpt)
         return self.ollama.generate_text(prompt)
 
     def _extract_reminder_from_document_text(
@@ -319,14 +345,7 @@ class AttachmentInputHandler:
         attachment: AttachmentRef,
     ) -> dict[str, str]:
         excerpt = self._clip_text(document_text, 14000)
-        prompt = (
-            f"Extract a single best reminder from this {attachment.kind.upper()} and return STRICT JSON only. "
-            "Format: {\"title\": \"...\", \"notes\": \"...\"}. "
-            "Rules: title 3-12 words, actionable, and not a generic heading like 'Summary'; notes <= 280 chars. "
-            f"User instruction: {user_instruction}\n\n"
-            "Document content:\n"
-            f"{excerpt}"
-        )
+        prompt = document_reminder_extract_prompt(attachment.kind, user_instruction, excerpt)
         raw = self.ollama.generate_text(prompt)
         parsed = self._parse_json_object(raw)
         if parsed and (parsed.get("title") or "").strip():
@@ -367,3 +386,63 @@ class AttachmentInputHandler:
         if len(words) <= max_words:
             return text.strip()
         return " ".join(words[:max_words]).strip()
+
+    def _is_mp4_media(self, attachment: AttachmentRef) -> bool:
+        mime = (attachment.mime_type or "").lower()
+        name = (attachment.file_name or "").lower()
+        return mime == "video/mp4" or name.endswith(".mp4")
+
+    def _convert_mp4_to_wav(self, media_bytes: bytes) -> bytes | None:
+        input_path = ""
+        output_path = ""
+        try:
+            if not self._has_ffmpeg():
+                LOGGER.warning("ffmpeg is not installed or not available in PATH")
+                return None
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as input_file:
+                input_file.write(media_bytes)
+                input_path = input_file.name
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as output_file:
+                output_path = output_file.name
+
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-i",
+                input_path,
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-f",
+                "wav",
+                output_path,
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if result.returncode != 0:
+                LOGGER.warning("ffmpeg mp4->wav conversion failed: %s", result.stderr.strip())
+                return None
+
+            converted = Path(output_path).read_bytes()
+            return converted
+        except Exception as exc:
+            LOGGER.warning("MP4 audio extraction failed: %s", exc)
+            return None
+        finally:
+            for path in (input_path, output_path):
+                if not path:
+                    continue
+                try:
+                    Path(path).unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+    def _has_ffmpeg(self) -> bool:
+        try:
+            result = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, timeout=8)
+            return result.returncode == 0
+        except Exception:
+            return False

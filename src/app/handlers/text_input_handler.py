@@ -13,25 +13,36 @@ from src.app.handlers.intent_parsing import (
     has_reminder_intent,
     has_summary_intent,
 )
+from src.app.handlers.operation_status import OperationStatus
 from src.app.handlers.reminder_draft_manager import ReminderDraftManager
 from src.app.handlers.reminder_formatting import format_reminder_brief
+from src.app.messages import msg
+from src.app.prompts import hackathon_query_prompt
 from src.clients.ollama_client import OllamaClient
 from src.core.config import Settings
 from src.storage.database import Database
 
 
 class TextInputHandler:
-    def __init__(self, db: Database, ollama: OllamaClient, settings: Settings, draft_manager: ReminderDraftManager):
+    def __init__(
+        self,
+        db: Database,
+        ollama: OllamaClient,
+        settings: Settings,
+        draft_manager: ReminderDraftManager,
+        run_gpu_task,
+    ):
         self.db = db
         self.ollama = ollama
         self.settings = settings
         self.draft_manager = draft_manager
+        self.run_gpu_task = run_gpu_task
 
     async def handle_message(
         self,
         update: Update,
         parse_add_payload: Callable[[str], dict[str, str]],
-        build_group_summary: Callable[[bool], Awaitable[str]],
+        build_group_summary: Callable[..., Awaitable[str]],
     ) -> bool:
         if not update.message or not update.effective_user:
             return False
@@ -83,6 +94,7 @@ class TextInputHandler:
             source_kind="user_input",
             title=parsed["title"],
             notes="",
+            link=parsed.get("link", ""),
             priority=parsed["priority"],
             due_at_utc=parsed["due_at_utc"],
             timezone_name=self.settings.default_timezone,
@@ -98,18 +110,18 @@ class TextInputHandler:
         self,
         update: Update,
         text: str,
-        build_group_summary: Callable[[bool], Awaitable[str]],
+        build_group_summary: Callable[..., Awaitable[str]],
     ) -> None:
         if not update.message or not update.effective_user:
             return
 
-        await update.message.reply_text("Working on that summary now...")
+        await OperationStatus.started(update, "Working on that summary now...")
         try:
             inline_content = extract_summary_content(text)
             if inline_content:
-                summary = self._summarize_inline_text(inline_content)
+                summary = await self.run_gpu_task(self._summarize_inline_text, inline_content)
             elif self.settings.monitored_group_chat_id:
-                summary = await build_group_summary(True)
+                summary = await build_group_summary(save=True)
             else:
                 await update.message.reply_text(
                     "Please paste the content after your summarize request, or set MONITORED_GROUP_CHAT_ID for group summaries."
@@ -117,7 +129,7 @@ class TextInputHandler:
                 return
 
             await update.message.reply_text(summary)
-            await update.message.reply_text("Summary complete. I will now draft reminder suggestions.")
+            await OperationStatus.done(update, "Summary complete. I will now draft reminder suggestions.")
             await self.draft_manager.propose_from_text(
                 update=update,
                 source_kind="group_summary",
@@ -125,7 +137,7 @@ class TextInputHandler:
                 user_instruction=text,
             )
         except Exception as exc:
-            await update.message.reply_text(f"I hit an error while summarizing: {exc}")
+            await OperationStatus.error(update, f"I hit an error while summarizing: {exc}")
 
     def _summarize_inline_text(self, content: str) -> str:
         cleaned_lines = []
@@ -145,7 +157,7 @@ class TextInputHandler:
             return
         rows = self.db.fetch_recent_chat_messages(update.effective_chat.id, limit=300)
         if not rows:
-            await update.message.reply_text("I do not have message history yet. Paste or forward hackathon posts first.")
+            await update.message.reply_text(msg("hackathon_no_history"))
             return
 
         corpus_lines: list[str] = []
@@ -158,18 +170,11 @@ class TextInputHandler:
             corpus_lines.append(f"[{row['received_at_utc']}] {text}")
 
         if not corpus_lines:
-            await update.message.reply_text("I do not have enough text content to answer that yet.")
+            await update.message.reply_text(msg("hackathon_no_text"))
             return
 
-        prompt = (
-            "You are an assistant that extracts hackathon opportunities from chat history. "
-            "Use ONLY the content provided. If date range is requested, filter accordingly. "
-            "If unknown, say unknown. Return concise bullet points with: Name, Date/Time, Location, Link (if any).\n\n"
-            f"User question:\n{user_query}\n\n"
-            "Chat history:\n"
-            + "\n".join(corpus_lines[-180:])
-        )
-        answer = self.ollama.generate_text(prompt)
+        prompt = hackathon_query_prompt(user_query, corpus_lines)
+        answer = await self.run_gpu_task(self.ollama.generate_text, prompt)
         await update.message.reply_text(answer)
 
     async def _handle_reply_reminder(self, update: Update, text: str) -> bool:
@@ -195,7 +200,7 @@ class TextInputHandler:
 
         source_text = (replied.text or replied.caption or "").strip()
         if not source_text:
-            await update.message.reply_text("I can only create reply-based reminders from text/caption messages right now.")
+            await update.message.reply_text(msg("error_text_only_reply"))
             return True
 
         title = self._title_from_reply_text(source_text)
@@ -210,6 +215,7 @@ class TextInputHandler:
             source_kind="reply_message",
             title=title,
             notes=source_text[:1500],
+            link=self._extract_first_url(source_text),
             priority=details["priority"],
             due_at_utc=details["due_at_utc"],
             timezone_name=self.settings.default_timezone,
@@ -256,9 +262,9 @@ class TextInputHandler:
         if reminder_id is None:
             return False
 
-        existing = self.db.get_reminder_by_id(reminder_id)
+        existing = self.db.get_reminder_by_id_for_chat(reminder_id, update.effective_chat.id)
         if existing is None:
-            await update.message.reply_text(f"Reminder #{reminder_id} not found.")
+            await update.message.reply_text(msg("error_not_found", id=reminder_id))
             return True
 
         current = dict(existing)
@@ -277,6 +283,15 @@ class TextInputHandler:
         else:
             new_notes = notes_candidate
 
+        link_candidate = self._extract_field_value(text, "link")
+        if link_candidate is None:
+            if "clear link" in text.lower():
+                new_link = ""
+            else:
+                new_link = str(current.get("link") or "")
+        else:
+            new_link = link_candidate
+
         recurrence = str(current.get("recurrence_rule") or "")
         every_match = re.search(r"every\s*:\s*(daily|weekly|monthly|none)\b", text, re.IGNORECASE)
         if every_match:
@@ -286,6 +301,7 @@ class TextInputHandler:
         changed = (
             new_title != str(current.get("title") or "")
             or new_notes != str(current.get("notes") or "")
+            or new_link != str(current.get("link") or "")
             or new_priority != str(current.get("priority") or "mid")
             or new_due != str(current.get("due_at_utc") or "")
             or recurrence != str(current.get("recurrence_rule") or "")
@@ -293,24 +309,26 @@ class TextInputHandler:
         if not changed:
             await update.message.reply_text(
                 "I found the reminder ID, but no editable fields were detected. "
-                "Try: set to tomorrow 8am high, or title:<text>, notes:<text>, every:weekly"
+                "Try: set to tomorrow 8am high, or title:<text>, notes:<text>, link:<url>, every:weekly"
             )
             return True
 
         if not new_title.strip() or not new_due:
-            await update.message.reply_text("Edited reminder must keep a non-empty title and due date/time.")
+            await update.message.reply_text(msg("error_edit_must_keep"))
             return True
 
-        ok = self.db.update_reminder_fields(
+        ok = self.db.update_reminder_fields_for_chat(
             reminder_id=reminder_id,
+            chat_id_to_notify=update.effective_chat.id,
             title=new_title.strip(),
             notes=new_notes,
+            link=new_link,
             priority=new_priority,
             due_at_utc=new_due,
             recurrence_rule=recurrence,
         )
         if not ok:
-            await update.message.reply_text(f"Reminder #{reminder_id} could not be updated.")
+            await update.message.reply_text(msg("error_update_failed", id=reminder_id))
             return True
 
         await update.message.reply_text(
@@ -328,8 +346,14 @@ class TextInputHandler:
             return None
 
     def _extract_field_value(self, text: str, field_name: str) -> str | None:
-        pattern = rf"{field_name}\s*:\s*(.+?)(?=\s+(?:title|notes|p|priority|at|every)\s*:|$)"
+        pattern = rf"{field_name}\s*:\s*(.+?)(?=\s+(?:title|notes|link|p|priority|at|every)\s*:|$)"
         match = re.search(pattern, text, re.IGNORECASE)
         if not match:
             return None
         return match.group(1).strip()
+
+    def _extract_first_url(self, text: str) -> str:
+        match = re.search(r"https?://\S+", text)
+        if not match:
+            return ""
+        return match.group(0).rstrip(").,]")

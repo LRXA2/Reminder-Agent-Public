@@ -35,7 +35,18 @@ _load_env()
 class Settings:
     telegram_bot_token: str
     personal_chat_id: int
+    allowed_telegram_user_ids: Tuple[int, ...]
     monitored_group_chat_id: int
+    userbot_enabled: bool
+    userbot_api_id: int
+    userbot_api_hash: str
+    userbot_session_name: str
+    userbot_ingest_chat_ids: Tuple[int, ...]
+    userbot_allow_sending: bool
+    userbot_send_whitelist_chat_ids: Tuple[int, ...]
+    auto_summary_enabled: bool
+    auto_summary_chat_ids: Tuple[int, ...]
+    auto_summary_min_interval_minutes: int
     db_path: str
     default_timezone: str
     archive_retention_days: int
@@ -46,6 +57,7 @@ class Settings:
     ollama_vision_model: str
     ollama_autostart: bool
     ollama_start_timeout_seconds: int
+    ollama_request_timeout_seconds: int
     ollama_use_highest_vram_gpu: bool
     stt_provider: str
     stt_model: str
@@ -95,6 +107,16 @@ def _parse_digest_times(value: str) -> Tuple[tuple[int, int], ...]:
     return tuple(times)
 
 
+def _parse_int_csv(value: str) -> Tuple[int, ...]:
+    items: list[int] = []
+    for raw_part in value.split(","):
+        part = raw_part.strip()
+        if not part:
+            continue
+        items.append(int(part))
+    return tuple(items)
+
+
 def get_settings() -> Settings:
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
@@ -105,10 +127,24 @@ def get_settings() -> Settings:
         digest_times_raw = os.getenv("DIGEST_TIMES_UTC", "").strip()
     digest_times = _parse_digest_times(digest_times_raw) if digest_times_raw else tuple()
 
+    allowed_users_raw = os.getenv("ALLOWED_TELEGRAM_USER_IDS", "").strip()
+    allowed_users = _parse_int_csv(allowed_users_raw) if allowed_users_raw else tuple()
+
     return Settings(
         telegram_bot_token=token,
         personal_chat_id=_int_env("PERSONAL_CHAT_ID", 0),
+        allowed_telegram_user_ids=allowed_users,
         monitored_group_chat_id=_int_env("MONITORED_GROUP_CHAT_ID", 0),
+        userbot_enabled=_bool_env("USERBOT_ENABLED", False),
+        userbot_api_id=_int_env("USERBOT_API_ID", 0),
+        userbot_api_hash=os.getenv("USERBOT_API_HASH", "").strip(),
+        userbot_session_name=os.getenv("USERBOT_SESSION_NAME", "reminder_userbot").strip(),
+        userbot_ingest_chat_ids=_parse_int_csv(os.getenv("USERBOT_INGEST_CHAT_IDS", "").strip()),
+        userbot_allow_sending=_bool_env("USERBOT_ALLOW_SENDING", False),
+        userbot_send_whitelist_chat_ids=_parse_int_csv(os.getenv("USERBOT_SEND_WHITELIST_CHAT_IDS", "").strip()),
+        auto_summary_enabled=_bool_env("AUTO_SUMMARY_ENABLED", False),
+        auto_summary_chat_ids=_parse_int_csv(os.getenv("AUTO_SUMMARY_CHAT_IDS", "").strip()),
+        auto_summary_min_interval_minutes=max(1, _int_env("AUTO_SUMMARY_MIN_INTERVAL_MINUTES", 15)),
         db_path=os.getenv("DB_PATH", "reminder_agent.db"),
         default_timezone=os.getenv("DEFAULT_TIMEZONE", "UTC"),
         archive_retention_days=_int_env("ARCHIVE_RETENTION_DAYS", 30),
@@ -119,6 +155,7 @@ def get_settings() -> Settings:
         ollama_vision_model=os.getenv("OLLAMA_VISION_MODEL", "").strip(),
         ollama_autostart=_bool_env("OLLAMA_AUTOSTART", True),
         ollama_start_timeout_seconds=max(3, _int_env("OLLAMA_START_TIMEOUT_SECONDS", 20)),
+        ollama_request_timeout_seconds=max(20, _int_env("OLLAMA_REQUEST_TIMEOUT_SECONDS", 180)),
         ollama_use_highest_vram_gpu=_bool_env("OLLAMA_USE_HIGHEST_VRAM_GPU", True),
         stt_provider=os.getenv("STT_PROVIDER", "faster_whisper").strip().lower(),
         stt_model=os.getenv("STT_MODEL", "large-v3").strip(),

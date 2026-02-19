@@ -56,6 +56,7 @@ class Database:
                 source_kind TEXT NOT NULL,
                 title TEXT NOT NULL,
                 notes TEXT,
+                link TEXT,
                 status TEXT NOT NULL DEFAULT 'open',
                 priority TEXT NOT NULL DEFAULT 'mid',
                 due_at_utc TEXT NOT NULL,
@@ -96,7 +97,15 @@ class Database:
         with self._lock:
             for stmt in statements:
                 self._conn.execute(stmt)
+            self._ensure_column("reminders", "link", "TEXT")
             self._conn.commit()
+
+    def _ensure_column(self, table_name: str, column_name: str, column_type: str) -> None:
+        rows = self._conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        existing_columns = {str(row[1]) for row in rows}
+        if column_name in existing_columns:
+            return
+        self._conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
 
     def _execute(self, query: str, params: Iterable[Any] = ()) -> sqlite3.Cursor:
         with self._lock:
@@ -173,6 +182,7 @@ class Database:
         timezone_name: str,
         chat_id_to_notify: int,
         recurrence_rule: str | None,
+        link: str = "",
     ) -> int:
         now = datetime.now(timezone.utc).isoformat()
         priority = priority if priority in PRIORITY_RANK else "mid"
@@ -184,6 +194,7 @@ class Database:
                 source_kind,
                 title,
                 notes,
+                link,
                 status,
                 priority,
                 due_at_utc,
@@ -192,7 +203,7 @@ class Database:
                 chat_id_to_notify,
                 created_at_utc,
                 updated_at_utc
-            ) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
@@ -200,6 +211,7 @@ class Database:
                 source_kind,
                 title,
                 notes,
+                link,
                 priority,
                 due_at_utc,
                 timezone_name,
@@ -226,19 +238,55 @@ class Database:
         )
         return cursor.rowcount > 0
 
+    def mark_done_and_archive_for_chat(self, reminder_id: int, chat_id_to_notify: int) -> bool:
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = self._execute(
+            """
+            UPDATE reminders
+            SET status='archived',
+                done_at_utc=?,
+                archived_at_utc=?,
+                updated_at_utc=?
+            WHERE id=?
+              AND chat_id_to_notify=?
+              AND status IN ('open', 'done')
+            """,
+            (now, now, now, reminder_id, str(chat_id_to_notify)),
+        )
+        return cursor.rowcount > 0
+
     def delete_reminder_permanently(self, reminder_id: int) -> bool:
         cursor = self._execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+        return cursor.rowcount > 0
+
+    def delete_reminder_permanently_for_chat(self, reminder_id: int, chat_id_to_notify: int) -> bool:
+        cursor = self._execute(
+            "DELETE FROM reminders WHERE id = ? AND chat_id_to_notify = ?",
+            (reminder_id, str(chat_id_to_notify)),
+        )
         return cursor.rowcount > 0
 
     def get_reminder_by_id(self, reminder_id: int) -> sqlite3.Row | None:
         with self._lock:
             row = self._conn.execute(
                 """
-                SELECT id, title, notes, priority, due_at_utc, status, source_kind, recurrence_rule, created_at_utc, updated_at_utc
+                SELECT id, title, notes, link, priority, due_at_utc, status, source_kind, recurrence_rule, created_at_utc, updated_at_utc
                 FROM reminders
                 WHERE id = ?
                 """,
                 (reminder_id,),
+            ).fetchone()
+        return row
+
+    def get_reminder_by_id_for_chat(self, reminder_id: int, chat_id_to_notify: int) -> sqlite3.Row | None:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT id, title, notes, link, priority, due_at_utc, status, source_kind, recurrence_rule, created_at_utc, updated_at_utc
+                FROM reminders
+                WHERE id = ? AND chat_id_to_notify = ?
+                """,
+                (reminder_id, str(chat_id_to_notify)),
             ).fetchone()
         return row
 
@@ -247,6 +295,7 @@ class Database:
         reminder_id: int,
         title: str,
         notes: str,
+        link: str,
         priority: str,
         due_at_utc: str,
         recurrence_rule: str | None,
@@ -258,13 +307,54 @@ class Database:
             UPDATE reminders
             SET title = ?,
                 notes = ?,
+                link = ?,
                 priority = ?,
                 due_at_utc = ?,
                 recurrence_rule = ?,
                 updated_at_utc = ?
             WHERE id = ?
             """,
-            (title, notes, normalized_priority, due_at_utc, recurrence_rule, now, reminder_id),
+            (title, notes, link, normalized_priority, due_at_utc, recurrence_rule, now, reminder_id),
+        )
+        return cursor.rowcount > 0
+
+    def update_reminder_fields_for_chat(
+        self,
+        reminder_id: int,
+        chat_id_to_notify: int,
+        title: str,
+        notes: str,
+        link: str,
+        priority: str,
+        due_at_utc: str,
+        recurrence_rule: str | None,
+    ) -> bool:
+        now = datetime.now(timezone.utc).isoformat()
+        normalized_priority = priority if priority in PRIORITY_RANK else "mid"
+        cursor = self._execute(
+            """
+            UPDATE reminders
+            SET title = ?,
+                notes = ?,
+                link = ?,
+                priority = ?,
+                due_at_utc = ?,
+                recurrence_rule = ?,
+                updated_at_utc = ?
+            WHERE id = ?
+              AND chat_id_to_notify = ?
+            """,
+            (
+                title,
+                notes,
+                link,
+                normalized_priority,
+                due_at_utc,
+                recurrence_rule,
+                now,
+                reminder_id,
+                str(chat_id_to_notify),
+            ),
         )
         return cursor.rowcount > 0
 
@@ -307,6 +397,19 @@ class Database:
 
         with self._lock:
             return list(self._conn.execute(base, tuple(params)).fetchall())
+
+    def list_reminders_for_chat(self, chat_id_to_notify: int) -> list[sqlite3.Row]:
+        query = """
+            SELECT id, title, priority, due_at_utc, status
+            FROM reminders
+            WHERE status = 'open'
+              AND chat_id_to_notify = ?
+            ORDER BY due_at_utc ASC,
+                     CASE priority WHEN 'immediate' THEN 4 WHEN 'high' THEN 3 WHEN 'mid' THEN 2 ELSE 1 END DESC,
+                     id ASC
+        """
+        with self._lock:
+            return list(self._conn.execute(query, (str(chat_id_to_notify),)).fetchall())
 
     def get_due_reminders(self, now_utc_iso: str) -> list[sqlite3.Row]:
         query = """
@@ -369,6 +472,20 @@ class Database:
         with self._lock:
             return list(self._conn.execute(query, (str(group_chat_id), limit)).fetchall())
 
+    def fetch_recent_group_messages_since(self, group_chat_id: int, since_utc_iso: str, limit: int = 50) -> list[sqlite3.Row]:
+        query = """
+            SELECT text, sender_telegram_id, received_at_utc
+            FROM messages
+            WHERE chat_id = ?
+              AND source_type='group'
+              AND direction='inbound'
+              AND received_at_utc > ?
+            ORDER BY received_at_utc DESC
+            LIMIT ?
+        """
+        with self._lock:
+            return list(self._conn.execute(query, (str(group_chat_id), since_utc_iso, limit)).fetchall())
+
     def fetch_recent_chat_messages(self, chat_id: int, limit: int = 200) -> list[sqlite3.Row]:
         query = """
             SELECT text, sender_telegram_id, received_at_utc
@@ -379,6 +496,20 @@ class Database:
         """
         with self._lock:
             return list(self._conn.execute(query, (str(chat_id), limit)).fetchall())
+
+    def has_group_messages_since(self, group_chat_id: int, since_utc_iso: str) -> bool:
+        query = """
+            SELECT 1
+            FROM messages
+            WHERE chat_id = ?
+              AND source_type = 'group'
+              AND direction = 'inbound'
+              AND received_at_utc > ?
+            LIMIT 1
+        """
+        with self._lock:
+            row = self._conn.execute(query, (str(group_chat_id), since_utc_iso)).fetchone()
+        return row is not None
 
     def save_summary(self, group_chat_id: int, window_start_utc: str, window_end_utc: str, summary_text: str) -> None:
         self._execute(

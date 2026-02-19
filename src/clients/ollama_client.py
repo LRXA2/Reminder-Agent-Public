@@ -10,12 +10,21 @@ import re
 
 import requests
 
+from src.app.prompts import group_summary_prompt, image_reminder_extract_prompt, image_summary_prompt
+
 
 class OllamaClient:
-    def __init__(self, base_url: str, text_model: str, vision_model: str = ""):
+    def __init__(
+        self,
+        base_url: str,
+        text_model: str,
+        vision_model: str = "",
+        request_timeout_seconds: int = 180,
+    ):
         self.base_url = base_url.rstrip("/")
         self.text_model = text_model.strip()
         self.vision_model = vision_model.strip()
+        self.request_timeout_seconds = max(20, int(request_timeout_seconds))
 
     def ensure_server(self, autostart: bool, timeout_seconds: int, use_highest_vram_gpu: bool = False) -> bool:
         if self._is_server_ready():
@@ -150,13 +159,7 @@ class OllamaClient:
     def summarize_messages(self, lines: list[str]) -> str:
         if not lines:
             return "No recent messages to summarize."
-
-        prompt = (
-            "You summarize Telegram group updates. Return concise markdown with sections: "
-            "Key updates, Decisions, Action items, Open questions. Keep it practical and brief.\n\n"
-            "Messages:\n"
-            + "\n".join(lines)
-        )
+        prompt = group_summary_prompt(lines)
         return self._generate(prompt)
 
     def generate_text(self, prompt: str) -> str:
@@ -167,11 +170,7 @@ class OllamaClient:
         if not model:
             return "Image summary unavailable (no active vision model)."
 
-        prompt = (
-            "Summarize this image for a productivity assistant. "
-            "Return concise plain text with key details, dates/deadlines, and possible follow-up actions if visible. "
-            f"User request context: {user_instruction or 'No extra instructions provided.'}"
-        )
+        prompt = image_summary_prompt(user_instruction)
         encoded_image = base64.b64encode(image_bytes).decode("ascii")
         payload = {
             "model": model,
@@ -180,7 +179,11 @@ class OllamaClient:
             "stream": False,
         }
         try:
-            response = requests.post(f"{self.base_url}/api/generate", json=payload, timeout=90)
+            response = requests.post(
+                f"{self.base_url}/api/generate",
+                json=payload,
+                timeout=self.request_timeout_seconds,
+            )
             response.raise_for_status()
             data = response.json()
             text = (data.get("response") or "").strip()
@@ -196,14 +199,7 @@ class OllamaClient:
                 "notes": "Vision summary unavailable (no active vision model).",
             }
 
-        prompt = (
-            "You extract reminder details from an image for a personal productivity bot. "
-            "Return STRICT JSON ONLY with keys: title, notes. "
-            "Rules: title must be actionable, 3-12 words, and must NOT be a generic heading like 'Summary'. "
-            "notes must be <= 280 chars. "
-            "If uncertain, infer the most likely concrete task from visible content. "
-            f"User context: {user_instruction or 'No extra instructions provided.'}"
-        )
+        prompt = image_reminder_extract_prompt(user_instruction)
         encoded_image = base64.b64encode(image_bytes).decode("ascii")
         payload = {
             "model": model,
@@ -212,7 +208,11 @@ class OllamaClient:
             "stream": False,
         }
         try:
-            response = requests.post(f"{self.base_url}/api/generate", json=payload, timeout=90)
+            response = requests.post(
+                f"{self.base_url}/api/generate",
+                json=payload,
+                timeout=self.request_timeout_seconds,
+            )
             response.raise_for_status()
             data = response.json()
             raw = (data.get("response") or "").strip()
@@ -249,14 +249,18 @@ class OllamaClient:
             "prompt": prompt,
             "stream": False,
         }
-        try:
-            response = requests.post(url, json=payload, timeout=60)
-            response.raise_for_status()
-            data = response.json()
-            text = data.get("response", "").strip()
-            return text or "(No summary returned by model.)"
-        except Exception as exc:
-            return f"Summary unavailable (Ollama error: {exc})."
+        last_error: Exception | None = None
+        for _attempt in range(2):
+            try:
+                response = requests.post(url, json=payload, timeout=self.request_timeout_seconds)
+                response.raise_for_status()
+                data = response.json()
+                text = data.get("response", "").strip()
+                return text or "(No summary returned by model.)"
+            except Exception as exc:
+                last_error = exc
+                time.sleep(0.4)
+        return f"Summary unavailable (Ollama error: {last_error})."
 
     def _resolve_text_model(self) -> str:
         if self.text_model:

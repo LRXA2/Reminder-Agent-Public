@@ -14,8 +14,10 @@ Personal Telegram assistant for reminders, summaries, and lightweight planning.
 - Create reminders from image replies using a vision-capable Ollama model
 - Summarize DOCX/PDF attachments and create reminders from document content
 - Transcribe audio/voice messages locally with faster-whisper for summary + reminder drafting
+- Accept MP4 inputs by extracting audio track before transcription
 - Query reminder views: all, priority, date windows, overdue
 - Manage text + vision Ollama models from Telegram (`/models`, `/model`, `/status`)
+- Optional userbot ingestion (Telethon) for selected chats
 
 ## Tech Stack
 
@@ -26,7 +28,9 @@ Personal Telegram assistant for reminders, summaries, and lightweight planning.
 - `dateparser`
 - `pypdf`
 - `faster-whisper`
+- `telethon` (optional userbot ingestion)
 - Ollama (local LLM)
+- `ffmpeg` (system installation, for MP4 audio extraction)
 
 ## Project Structure
 
@@ -67,6 +71,7 @@ Example (`..\.env`):
 ```env
 TELEGRAM_BOT_TOKEN=YOUR_REAL_BOT_TOKEN
 PERSONAL_CHAT_ID=YOUR_REAL_CHAT_ID
+ALLOWED_TELEGRAM_USER_IDS=123456789,987654321
 MONITORED_GROUP_CHAT_ID=0
 DB_PATH=reminder_agent.db
 DEFAULT_TIMEZONE=Asia/Singapore
@@ -79,6 +84,7 @@ OLLAMA_TEXT_MODEL=
 OLLAMA_VISION_MODEL=
 OLLAMA_AUTOSTART=true
 OLLAMA_START_TIMEOUT_SECONDS=20
+OLLAMA_REQUEST_TIMEOUT_SECONDS=180
 OLLAMA_USE_HIGHEST_VRAM_GPU=true
 
 STT_PROVIDER=faster_whisper
@@ -86,6 +92,18 @@ STT_MODEL=large-v3
 STT_DEVICE=auto
 STT_COMPUTE_TYPE=auto
 STT_USE_HIGHEST_VRAM_GPU=true
+
+USERBOT_ENABLED=false
+USERBOT_API_ID=
+USERBOT_API_HASH=
+USERBOT_SESSION_NAME=reminder_userbot
+USERBOT_INGEST_CHAT_IDS=
+USERBOT_ALLOW_SENDING=false
+USERBOT_SEND_WHITELIST_CHAT_IDS=
+
+AUTO_SUMMARY_ENABLED=false
+AUTO_SUMMARY_CHAT_IDS=
+AUTO_SUMMARY_MIN_INTERVAL_MINUTES=15
 
 DIGEST_TIMES_LOCAL=23:00,3:30,12:00
 ```
@@ -95,13 +113,22 @@ Notes:
 - `OLLAMA_MODEL` can be blank. Bot auto-picks first installed model.
 - `OLLAMA_TEXT_MODEL` overrides `OLLAMA_MODEL` for text tasks when set.
 - `OLLAMA_VISION_MODEL` controls image understanding; falls back to active text model if blank.
+- `OLLAMA_REQUEST_TIMEOUT_SECONDS` controls timeout for each Ollama generation request.
 - `DIGEST_TIMES_LOCAL` follows `DEFAULT_TIMEZONE`.
 - Legacy UTC digest env names are still read as fallback (`DIGEST_TIMES_UTC`, `DIGEST_HOUR_UTC`, `DIGEST_MINUTE_UTC`).
 - If you are DM-only for now, keep `MONITORED_GROUP_CHAT_ID=0`.
 - `MESSAGE_RETENTION_DAYS` controls how long stored chat messages are kept before auto-deletion.
+- `ALLOWED_TELEGRAM_USER_IDS` restricts bot usage to specific Telegram user IDs (comma-separated). Leave blank to allow all users.
 - `STT_PROVIDER=faster_whisper` enables local transcription for audio/voice attachments.
 - `STT_MODEL=large-v3` is accuracy-first and can be heavy on CPU.
 - `STT_USE_HIGHEST_VRAM_GPU=true` selects the Nvidia GPU with the largest VRAM first.
+- `USERBOT_ENABLED=true` enables optional Telethon userbot ingestion.
+- `USERBOT_INGEST_CHAT_IDS` is a comma-separated allowlist of chat IDs userbot will ingest.
+- `USERBOT_ALLOW_SENDING=false` keeps userbot ingest-only (read-only) by default.
+- `USERBOT_SEND_WHITELIST_CHAT_IDS` is only used if sending is enabled in future.
+- `AUTO_SUMMARY_ENABLED=true` auto-summarizes tracked chats when new messages arrive.
+- `AUTO_SUMMARY_CHAT_IDS` is a comma-separated allowlist of chats for auto-summary (falls back to `MONITORED_GROUP_CHAT_ID`, then `USERBOT_INGEST_CHAT_IDS` if empty).
+- `AUTO_SUMMARY_MIN_INTERVAL_MINUTES` prevents spam by enforcing a minimum gap between auto summaries per chat.
 
 ## Ollama Setup
 
@@ -144,19 +171,22 @@ DB file is created automatically on first run (`DB_PATH`, default `reminder_agen
 
 - `/help`
 - `/add Pay rent p:high at:tomorrow 9am`
+- `/add Submit form link:https://example.com p:mid at:fri 5pm`
 - `/add Standup prep p:mid at:8am every:daily`
 - `/done 12`
 - `/edit 12 p:high at:tomorrow 9am`
-- `/edit 12 title:Review ASAVC(M) details notes:Bring Smart No.4 every:none`
+- `/edit 12 title:Review ASAVC(M) details notes:Bring Smart No.4 link:https://maps.app.goo.gl/... every:none`
 - `/delete 12`
 - `/detail 12`
 - `/list all`
+- `/list -1002219388089`
 - `/list priority high`
 - `/list due 14d`
 - `/list today`
 - `/list tomorrow`
 - `/list overdue`
 - `/summary`
+- `/summary -1002219388089`
 - `/models`
 - `/model`
 - `/model mistral-small3.2:24b` (set text model)
@@ -174,6 +204,7 @@ Image reminder flow in DM:
 - Attachment routing is now generic (image/docx/audio), with full AI extraction currently enabled for images
 - For DOCX/PDF, use captions or replies like `summarize this document` or `create reminder low tomorrow 9am`
 - For audio/voice, use captions or replies like `summarize this audio` or `create reminders from this recording`
+- MP4 is supported and will be converted to WAV before STT (requires `ffmpeg` available in PATH)
 
 Natural-language shortcuts in DM:
 
