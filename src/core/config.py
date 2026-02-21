@@ -47,10 +47,15 @@ class Settings:
     auto_summary_enabled: bool
     auto_summary_chat_ids: Tuple[int, ...]
     auto_summary_min_interval_minutes: int
+    gcal_sync_enabled: bool
+    gcal_calendar_id: str
+    gcal_credentials_file: str
     db_path: str
     default_timezone: str
     archive_retention_days: int
     message_retention_days: int
+    require_topic_on_add: bool
+    datetime_parse_debug: bool
     ollama_base_url: str
     ollama_model: str
     ollama_text_model: str
@@ -145,10 +150,15 @@ def get_settings() -> Settings:
         auto_summary_enabled=_bool_env("AUTO_SUMMARY_ENABLED", False),
         auto_summary_chat_ids=_parse_int_csv(os.getenv("AUTO_SUMMARY_CHAT_IDS", "").strip()),
         auto_summary_min_interval_minutes=max(1, _int_env("AUTO_SUMMARY_MIN_INTERVAL_MINUTES", 15)),
+        gcal_sync_enabled=_bool_env("GCAL_SYNC_ENABLED", False),
+        gcal_calendar_id=os.getenv("GCAL_CALENDAR_ID", "primary").strip(),
+        gcal_credentials_file=os.getenv("GCAL_CREDENTIALS_FILE", "").strip(),
         db_path=os.getenv("DB_PATH", "reminder_agent.db"),
         default_timezone=os.getenv("DEFAULT_TIMEZONE", "UTC"),
         archive_retention_days=_int_env("ARCHIVE_RETENTION_DAYS", 30),
         message_retention_days=max(0, _int_env("MESSAGE_RETENTION_DAYS", 14)),
+        require_topic_on_add=_bool_env("REQUIRE_TOPIC_ON_ADD", False),
+        datetime_parse_debug=_bool_env("DATETIME_PARSE_DEBUG", False),
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
         ollama_model=os.getenv("OLLAMA_MODEL", "").strip(),
         ollama_text_model=os.getenv("OLLAMA_TEXT_MODEL", "").strip(),

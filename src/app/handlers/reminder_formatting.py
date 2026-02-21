@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -15,12 +16,14 @@ def format_reminder_brief(reminder_id: int, title: str, due_at_utc: str, timezon
 
 
 def format_reminder_detail(row: dict, timezone_name: str) -> str:
-    notes = (row.get("notes") or "").strip()
+    notes = _clean_notes_for_display((row.get("notes") or "").strip())
     link = (row.get("link") or "").strip()
+    topic = (row.get("topics_text") or row.get("topic") or "").strip()
     lines = [
         f"ID: {row.get('id')}",
         f"Title: {row.get('title') or ''}",
         f"Date: {format_due_display(str(row.get('due_at_utc') or ''), timezone_name)}",
+        f"Topic: {topic or '(none)'}",
         f"Priority: {row.get('priority') or ''}",
         f"Status: {row.get('status') or ''}",
         f"Source: {row.get('source_kind') or ''}",
@@ -33,18 +36,38 @@ def format_reminder_detail(row: dict, timezone_name: str) -> str:
     return "\n".join(lines)
 
 
+def _clean_notes_for_display(notes: str) -> str:
+    if not notes:
+        return ""
+    lines = [line.rstrip() for line in notes.splitlines()]
+    idx = 0
+    while idx < len(lines):
+        candidate = lines[idx].strip()
+        lowered = candidate.lower()
+        if not candidate:
+            idx += 1
+            continue
+        if lowered in {"summary", "summary:", "**summary:**"}:
+            idx += 1
+            continue
+        if re.match(r"^#{1,6}\s+", candidate):
+            idx += 1
+            continue
+        break
+    cleaned = "\n".join(lines[idx:]).strip()
+    return cleaned if cleaned else notes
+
+
 def format_reminder_list_item(index: int, row: dict, timezone_name: str) -> str:
     reminder_id = row.get("id")
     title = (row.get("title") or "").strip()
+    topic = (row.get("topics_text") or row.get("topic") or "").strip()
     priority = str(row.get("priority") or "").upper()
     due_display = format_due_display(str(row.get("due_at_utc") or ""), timezone_name)
-    return "\n".join(
-        [
-            f"{index}) #{reminder_id} {title}",
-            f"   Date: {due_display}",
-            f"   Priority: {priority}",
-        ]
-    )
+    lines = [f"{index}) #{reminder_id} {title}", f"   Date: {due_display}", f"   Priority: {priority}"]
+    if topic:
+        lines.append(f"   Topic: {topic}")
+    return "\n".join(lines)
 
 
 def format_due_display(due_at_utc: str, timezone_name: str) -> str:

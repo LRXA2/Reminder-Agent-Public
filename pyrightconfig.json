@@ -1,0 +1,19 @@
+{
+  "typeCheckingMode": "basic",
+  "include": [
+    "src/app/handlers",
+    "src/app/reminder_bot.py"
+  ],
+  "exclude": [
+    "tests",
+    "**/__pycache__"
+  ],
+  "reportUnsupportedDunderAll": "none",
+  "reportOptionalMemberAccess": "none",
+  "reportOptionalSubscript": "none",
+  "reportAttributeAccessIssue": "none",
+  "reportOptionalCall": "none",
+  "reportArgumentType": "warning",
+  "reportCallIssue": "warning",
+  "reportGeneralTypeIssues": "warning"
+}

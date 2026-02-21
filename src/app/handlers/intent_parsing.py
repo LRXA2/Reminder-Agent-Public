@@ -118,8 +118,24 @@ def extract_due_and_priority(text: str, timezone_name: str) -> dict[str, str]:
             },
         )
 
+    if due_dt is not None and not _has_explicit_time(text):
+        due_dt = due_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+
     due_utc = due_dt.astimezone(timezone.utc).isoformat() if due_dt else ""
     return {
         "priority": priority,
         "due_at_utc": due_utc,
     }
+
+
+def _has_explicit_time(raw_text: str) -> bool:
+    text = (raw_text or "").strip().lower()
+    if not text:
+        return False
+    if re.search(r"\b([01]?\d|2[0-3]):[0-5]\d\b", text):
+        return True
+    if re.search(r"\b\d{1,2}\s*(am|pm)\b", text):
+        return True
+    if re.search(r"\b\d{1,2}:[0-5]\d\s*(am|pm)\b", text):
+        return True
+    return any(token in text for token in ("noon", "midnight", "morning", "afternoon", "evening", "tonight"))

@@ -1,251 +1,124 @@
 # Reminder Agent
 
-Personal Telegram assistant for reminders, summaries, and lightweight planning.
+A personal Telegram bot for reminders, summaries, and lightweight planning.
 
-## Features
+## What it does
 
-- Create reminders from Telegram chat input
-- Priority levels: `immediate`, `high`, `mid`, `low`
-- Scheduled notifications with recurring reminders (`daily`, `weekly`, `monthly`)
-- Mark done and auto-archive reminders
-- Auto-delete archived reminders after retention period
-- Summarize monitored group messages with local Ollama
-- Summarize pasted text in DM and convert to reminder with follow-up urgency/due date
-- Create reminders from image replies using a vision-capable Ollama model
-- Summarize DOCX/PDF attachments and create reminders from document content
-- Transcribe audio/voice messages locally with faster-whisper for summary + reminder drafting
-- Accept MP4 inputs by extracting audio track before transcription
-- Query reminder views: all, priority, date windows, overdue
-- Manage text + vision Ollama models from Telegram (`/models`, `/model`, `/status`)
-- Optional userbot ingestion (Telethon) for selected chats
+- Create reminders from chat text (`/add`, natural language, reply flows)
+- Manage reminders (`/edit`, `/done`, `/delete`, `/list`)
+- Organize by topics (`/topics`, `/topic`)
+- Draft reminders from summaries/images/docs/audio before saving
+- Optional Google Calendar sync (`/sync import|export|both`)
 
-## Tech Stack
+## Quick start
 
-- Python 3.10+
-- `python-telegram-bot`
-- `APScheduler`
-- `sqlite3` (built into Python)
-- `dateparser`
-- `pypdf`
-- `faster-whisper`
-- `telethon` (optional userbot ingestion)
-- Ollama (local LLM)
-- `ffmpeg` (system installation, for MP4 audio extraction)
-
-## Project Structure
-
-```text
-main.py
-src/
-  app/
-    reminder_bot.py
-  clients/
-    ollama_client.py
-  core/
-    config.py
-  storage/
-    database.py
-```
-
-## Setup
+1) Create and activate a virtual environment
 
 ```bash
 python -m venv .venv
 .venv\Scripts\activate
+```
+
+2) Install dependencies
+
+```bash
 pip install -r requirements.txt
 ```
 
-Create env file:
+3) Create your env file
 
 ```bash
 copy .env.example ..\.env
 ```
 
-By default the app loads env from one folder above repo root (`..\.env`).
-Optional override: set `ENV_FILE` to a full env path.
+4) Set required values in `..\.env`
 
-## Environment Variables
+- `TELEGRAM_BOT_TOKEN`
+- `PERSONAL_CHAT_ID`
+- optional: `ALLOWED_TELEGRAM_USER_IDS`
 
-Example (`..\.env`):
-
-```env
-TELEGRAM_BOT_TOKEN=YOUR_REAL_BOT_TOKEN
-PERSONAL_CHAT_ID=YOUR_REAL_CHAT_ID
-ALLOWED_TELEGRAM_USER_IDS=123456789,987654321
-MONITORED_GROUP_CHAT_ID=0
-DB_PATH=reminder_agent.db
-DEFAULT_TIMEZONE=Asia/Singapore
-ARCHIVE_RETENTION_DAYS=30
-MESSAGE_RETENTION_DAYS=14
-
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=
-OLLAMA_TEXT_MODEL=
-OLLAMA_VISION_MODEL=
-OLLAMA_AUTOSTART=true
-OLLAMA_START_TIMEOUT_SECONDS=20
-OLLAMA_REQUEST_TIMEOUT_SECONDS=180
-OLLAMA_USE_HIGHEST_VRAM_GPU=true
-
-STT_PROVIDER=faster_whisper
-STT_MODEL=large-v3
-STT_DEVICE=auto
-STT_COMPUTE_TYPE=auto
-STT_USE_HIGHEST_VRAM_GPU=true
-
-USERBOT_ENABLED=false
-USERBOT_API_ID=
-USERBOT_API_HASH=
-USERBOT_SESSION_NAME=reminder_userbot
-USERBOT_INGEST_CHAT_IDS=
-USERBOT_ALLOW_SENDING=false
-USERBOT_SEND_WHITELIST_CHAT_IDS=
-
-AUTO_SUMMARY_ENABLED=false
-AUTO_SUMMARY_CHAT_IDS=
-AUTO_SUMMARY_MIN_INTERVAL_MINUTES=15
-
-DIGEST_TIMES_LOCAL=23:00,3:30,12:00
-```
-
-Notes:
-
-- `OLLAMA_MODEL` can be blank. Bot auto-picks first installed model.
-- `OLLAMA_TEXT_MODEL` overrides `OLLAMA_MODEL` for text tasks when set.
-- `OLLAMA_VISION_MODEL` controls image understanding; falls back to active text model if blank.
-- `OLLAMA_REQUEST_TIMEOUT_SECONDS` controls timeout for each Ollama generation request.
-- `DIGEST_TIMES_LOCAL` follows `DEFAULT_TIMEZONE`.
-- Legacy UTC digest env names are still read as fallback (`DIGEST_TIMES_UTC`, `DIGEST_HOUR_UTC`, `DIGEST_MINUTE_UTC`).
-- If you are DM-only for now, keep `MONITORED_GROUP_CHAT_ID=0`.
-- `MESSAGE_RETENTION_DAYS` controls how long stored chat messages are kept before auto-deletion.
-- `ALLOWED_TELEGRAM_USER_IDS` restricts bot usage to specific Telegram user IDs (comma-separated). Leave blank to allow all users.
-- `STT_PROVIDER=faster_whisper` enables local transcription for audio/voice attachments.
-- `STT_MODEL=large-v3` is accuracy-first and can be heavy on CPU.
-- `STT_USE_HIGHEST_VRAM_GPU=true` selects the Nvidia GPU with the largest VRAM first.
-- `USERBOT_ENABLED=true` enables optional Telethon userbot ingestion.
-- `USERBOT_INGEST_CHAT_IDS` is a comma-separated allowlist of chat IDs userbot will ingest.
-- `USERBOT_ALLOW_SENDING=false` keeps userbot ingest-only (read-only) by default.
-- `USERBOT_SEND_WHITELIST_CHAT_IDS` is only used if sending is enabled in future.
-- `AUTO_SUMMARY_ENABLED=true` auto-summarizes tracked chats when new messages arrive.
-- `AUTO_SUMMARY_CHAT_IDS` is a comma-separated allowlist of chats for auto-summary (falls back to `MONITORED_GROUP_CHAT_ID`, then `USERBOT_INGEST_CHAT_IDS` if empty).
-- `AUTO_SUMMARY_MIN_INTERVAL_MINUTES` prevents spam by enforcing a minimum gap between auto summaries per chat.
-
-## Ollama Setup
-
-Install Ollama, then pull at least one model:
-
-```bash
-ollama pull llama3.1:8b
-```
-
-You can run `ollama serve` manually, or let bot autostart it (`OLLAMA_AUTOSTART=true`).
-
-## Run
+5) Run the bot
 
 ```bash
 python main.py
 ```
 
-## Test Speech-to-Text (Without Bot)
+## Basic usage
 
-Use the local STT test script first:
+- Add reminder:
 
-```bash
-python scripts/test_stt.py
+```text
+/add Pay rent p:high at:tomorrow 9am
 ```
 
-It will prompt for audio file path. You can also pass it directly:
+- Edit reminder:
 
-```bash
-python scripts/test_stt.py --file "D:\Aarron\Recording.m4a" --device cuda --compute-type float16
+```text
+/edit 12 p:mid at:fri 5pm
 ```
 
-Useful options:
+- Complete reminder:
 
-- `--highest-vram-gpu` picks the Nvidia GPU with largest VRAM
-- `--device cpu --compute-type int8` forces CPU fallback
+```text
+/done 12
+```
 
-DB file is created automatically on first run (`DB_PATH`, default `reminder_agent.db`).
+- List reminders:
 
-## Commands
+```text
+/list all
+/list today
+/list overdue
+```
 
-- `/help`
-- `/add Pay rent p:high at:tomorrow 9am`
-- `/add Submit form link:https://example.com p:mid at:fri 5pm`
-- `/add Standup prep p:mid at:8am every:daily`
-- `/done 12`
-- `/edit 12 p:high at:tomorrow 9am`
-- `/edit 12 title:Review ASAVC(M) details notes:Bring Smart No.4 link:https://maps.app.goo.gl/... every:none`
-- `/delete 12`
-- `/detail 12`
-- `/list all`
-- `/list -1002219388089`
-- `/list priority high`
-- `/list due 14d`
-- `/list today`
-- `/list tomorrow`
-- `/list overdue`
-- `/summary`
-- `/summary -1002219388089`
-- `/models`
-- `/model`
-- `/model mistral-small3.2:24b` (set text model)
-- `/model text mistral-small3.2:24b`
-- `/model vision mistral-small3.2:24b`
-- `/model tag mistral-small3.2:24b vision`
-- `/model untag mistral-small3.2:24b vision`
-- `/status`
+- Topics:
 
-Image reminder flow in DM:
+```text
+/topics
+/topics create work
+/topic add 12 work
+```
 
-- Send an image with caption like `remind me high tomorrow 9am`, or
-- Reply to an image with something like `remind me high tomorrow 9am`
-- You can also ask `summarize this image` (caption or reply), with optional reminder details
-- Attachment routing is now generic (image/docx/audio), with full AI extraction currently enabled for images
-- For DOCX/PDF, use captions or replies like `summarize this document` or `create reminder low tomorrow 9am`
-- For audio/voice, use captions or replies like `summarize this audio` or `create reminders from this recording`
-- MP4 is supported and will be converted to WAV before STT (requires `ffmpeg` available in PATH)
+- Notes:
 
-Natural-language shortcuts in DM:
+```text
+/notes
+/notes 12
+```
 
-- `help me summarize <pasted text>`
-- `summarize for me <pasted text>`
-- `add as reminder high tomorrow 9am` (as a reply to an existing message)
-- `set to tomorrow 8am high` (as a reply to a reminder card that contains `ID:`)
-- `what hackathons are available on 1 Mar - 15 Mar`
+## Attachment workflows
 
-For summary/image/document flows, reminder creation is now draft-first:
+In your personal chat, send or reply with:
 
-- Bot proposes one or more reminder drafts
-- You review/edit first
-- Reply with `confirm`, `confirm 1,3`, `edit <n> ...`, `remove <n>`, or `cancel`
+- image + caption: `summarize this image`
+- doc/pdf + caption: `summarize this document`
+- audio/voice + caption: `create reminders from this recording`
 
-Reminder creation response format is standardized as:
+The bot proposes drafts first, then you confirm:
 
-- `ID: <id>`
-- `Title: <title>`
-- `Date: dd/mm/yy [HH:mm]`
+- `confirm`
+- `confirm 1,3`
+- `edit <n> ...`
+- `remove <n>`
+- `cancel`
 
-Use `/detail <id>` to view full reminder notes/details.
+## Tests
 
-## How Reminder Flow Works
-
-- Inbound messages are stored selectively (monitored group only, plus personal chat messages that look hackathon-related).
-- Router decides command vs intent.
-- Reminder parser extracts task, priority, and datetime.
-- Scheduler checks due reminders every 30 seconds and sends notifications.
-- `/done <id>` archives reminder immediately.
-- Archive cleanup job removes old archived items daily.
-
-## Troubleshooting
-
-- `Missing TELEGRAM_BOT_TOKEN`: add it to `..\.env` and restart.
-- `ModuleNotFoundError`: run `python -m pip install -r requirements.txt`.
-- `ollama serve ... address already in use`: Ollama is already running, continue.
-- No group summaries: ensure bot has access and set `MONITORED_GROUP_CHAT_ID`.
-- STT GPU error `cublas64_12.dll is not found`: install CUDA 12.x (not only 11.x/13.x). The app/test script already tries to register CUDA 12 DLL dirs automatically on Windows.
-- To verify CUDA DLL manually on Windows:
+Run all tests:
 
 ```bash
-python -c "import os,ctypes; os.add_dll_directory(r'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\bin'); ctypes.CDLL('cublas64_12.dll'); print('cublas OK')"
+python run_tests.py
 ```
+
+## Optional quality checks
+
+```bash
+ruff check src tests
+pyright
+```
+
+## Notes
+
+- Default env path is `..\.env` (one folder above repo)
+- Database is local SQLite (`reminder_agent.db` by default)
+- If using audio from MP4, ensure `ffmpeg` is available in PATH

@@ -70,14 +70,58 @@ def document_reminder_extract_prompt(kind: str, user_instruction: str, excerpt: 
     )
 
 
-def draft_reminder_prompt(user_instruction: str, content: str) -> str:
+def draft_reminder_prompt(
+    user_instruction: str,
+    content: str,
+    schema_version: str = "2",
+    available_topics: list[str] | None = None,
+) -> str:
+    topic_line = "Available topics (use only these; otherwise use []): "
+    if available_topics:
+        topic_line += ", ".join(available_topics[:80])
+    else:
+        topic_line += "(none)"
     return (
         "You are a reminder planner. Determine if reminders are appropriate from the provided summary/content. "
-        "Return STRICT JSON ONLY in this schema: "
-        '{"appropriate": true|false, "reason": "...", "reminders": ['
-        '{"title":"...","notes":"...","link":"...","priority":"immediate|high|mid|low","due_text":"..."}]}. '
-        "Rules: suggest 0-5 reminders max; title actionable 3-12 words; notes <= 280 chars; "
+        f"Return STRICT JSON ONLY using schema_version='{schema_version}' in this schema. "
+        "No markdown, no prose, no code fences, JSON object only. "
+        '{"schema_version":"2","appropriate": true|false, "reason": "...", "reminders": ['
+        '{"title":"...","notes":"...","link":"...","priority":"immediate|high|mid|low",'
+        '"due_mode":"datetime|all_day|none|unclear","due_text":"...","confidence":"high|medium|low",'
+        '"topics":["..."],"priority_reason":"...","due_reason":"..."}]}. '
+        "Rules: title actionable 3-12 words; "
         "do not use generic titles like Summary; only include reminders with clear actionable tasks. "
-        "If due date is unclear, set due_text to empty string."
+        "If due date is unclear, set due_mode to unclear and due_text to empty string. "
+        "If date exists but no explicit time, use due_mode all_day. "
+        "If no date exists, use due_mode none with empty due_text. "
+        "If content contains a clear deadline phrase (for example 'by next friday' or 'due on 21 Mar'), do not use none/unclear; fill due_text accordingly. "
+        "If actionability is weak, set appropriate to false and explain briefly in reason. "
+        "topics is optional (up to 5 tags); do not invent topics and only use provided topic names; when unsure use []. "
+        "priority_reason and due_reason should be short. "
+        f"{topic_line}"
         f"\nUser instruction: {user_instruction}\n\nContent:\n{content[:22000]}"
+    )
+
+
+def repair_reminder_json_prompt(raw_text: str) -> str:
+    return (
+        "Fix malformed reminder output into STRICT JSON ONLY. "
+        "No markdown, no prose, no code fences. Return exactly one JSON object matching schema_version '2'. "
+        "If values are missing, use safe defaults.\n\n"
+        f"Raw output:\n{raw_text[:22000]}"
+    )
+
+
+def datetime_fallback_prompt(user_text: str, timezone_name: str, now_iso: str) -> str:
+    return (
+        "You convert natural language date/time into a concrete due expression for a reminder app. "
+        "Return STRICT JSON ONLY (no markdown/prose/code fences) with keys: due_text, due_mode, confidence. "
+        "due_mode must be one of: datetime, all_day, none, unclear. "
+        "confidence must be one of: high, medium, low. "
+        "If no date/time intent is present, set due_mode to none and due_text to empty string. "
+        "If date exists without explicit time, use due_mode all_day. "
+        "If ambiguous, use due_mode unclear and low confidence. "
+        "Keep due_text concise and parseable (example: '2026-03-17 09:00' or 'next monday 9am'). "
+        f"Timezone: {timezone_name}. Current local time: {now_iso}. "
+        f"Input: {user_text}"
     )
