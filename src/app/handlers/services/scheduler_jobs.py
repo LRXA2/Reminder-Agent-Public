@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from src.app.handlers.reminder_formatting import format_reminder_list_item
 
 if TYPE_CHECKING:
-    from src.app.reminder_bot import ReminderBot
+    from src.app.bot_orchestrator import ReminderBot
 
 
 LOGGER = logging.getLogger(__name__)
@@ -34,10 +34,10 @@ class JobRunner:
 
             recurrence = (row["recurrence_rule"] or "").strip().lower()
             if recurrence:
-                next_due = self.bot._compute_next_due(row["due_at_utc"], recurrence)
+                next_due = self.bot.reminder_logic_handler.compute_next_due(row["due_at_utc"], recurrence)
                 if next_due:
                     self.bot.db.update_recurring_due(int(row["id"]), next_due)
-                    await self.bot._sync_calendar_upsert(int(row["id"]))
+                    await self.bot.calendar_sync_handler.sync_calendar_upsert(int(row["id"]))
 
     async def cleanup_archives(self) -> None:
         deleted = self.bot.db.delete_old_archived(self.bot.settings.archive_retention_days)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from src.app.handlers.chat_pipeline import ChatPipelineHandler
+from src.app.handlers.runtime.message_pipeline import ChatPipelineHandler
 
 
 class _FakeMessage:
@@ -22,25 +22,29 @@ class _CallRecorder:
         return self.result
 
 
-class ChatPipelineTests(unittest.IsolatedAsyncioTestCase):
+class MessagePipelineTests(unittest.IsolatedAsyncioTestCase):
     async def test_pending_workflow_short_circuits_pipeline(self) -> None:
         pending_true = _CallRecorder(result=True)
         attachment = _CallRecorder(result=False)
         text_input = _CallRecorder(result=False)
 
         bot = SimpleNamespace(
-            _handle_pending_model_wizard=pending_true,
-            _handle_pending_topics_wizard=_CallRecorder(result=False),
-            _handle_pending_notes_wizard=_CallRecorder(result=False),
-            _handle_pending_delete_wizard=_CallRecorder(result=False),
-            _handle_pending_edit_wizard=_CallRecorder(result=False),
-            _handle_pending_add_wizard=_CallRecorder(result=False),
-            _handle_pending_add_confirmation=_CallRecorder(result=False),
+            list_sync_model_handler=SimpleNamespace(handle_pending_model_wizard=pending_true),
+            ui_wizard_handler=SimpleNamespace(
+                _handle_pending_topics_wizard=_CallRecorder(result=False),
+                _handle_pending_notes_wizard=_CallRecorder(result=False),
+                _handle_pending_delete_wizard=_CallRecorder(result=False),
+                _handle_pending_edit_wizard=_CallRecorder(result=False),
+            ),
+            add_edit_handler=SimpleNamespace(
+                handle_pending_add_wizard=_CallRecorder(result=False),
+                handle_pending_add_confirmation=_CallRecorder(result=False),
+                parse_add_payload=lambda _x: {},
+            ),
             reminder_draft_manager=SimpleNamespace(handle_followup=_CallRecorder(result=False)),
             attachment_input_handler=SimpleNamespace(handle_message=attachment),
             text_input_handler=SimpleNamespace(handle_message=text_input),
-            _parse_add_payload=lambda _x: {},
-            _build_group_summary=lambda *_a, **_k: "",
+            job_runner=SimpleNamespace(build_group_summary=lambda *_a, **_k: ""),
             settings=SimpleNamespace(personal_chat_id=1),
         )
         handler = ChatPipelineHandler(bot)
@@ -56,18 +60,22 @@ class ChatPipelineTests(unittest.IsolatedAsyncioTestCase):
         attachment = _CallRecorder(result=True)
         text_input = _CallRecorder(result=False)
         bot = SimpleNamespace(
-            _handle_pending_model_wizard=_CallRecorder(result=False),
-            _handle_pending_topics_wizard=_CallRecorder(result=False),
-            _handle_pending_notes_wizard=_CallRecorder(result=False),
-            _handle_pending_delete_wizard=_CallRecorder(result=False),
-            _handle_pending_edit_wizard=_CallRecorder(result=False),
-            _handle_pending_add_wizard=_CallRecorder(result=False),
-            _handle_pending_add_confirmation=_CallRecorder(result=False),
+            list_sync_model_handler=SimpleNamespace(handle_pending_model_wizard=_CallRecorder(result=False)),
+            ui_wizard_handler=SimpleNamespace(
+                _handle_pending_topics_wizard=_CallRecorder(result=False),
+                _handle_pending_notes_wizard=_CallRecorder(result=False),
+                _handle_pending_delete_wizard=_CallRecorder(result=False),
+                _handle_pending_edit_wizard=_CallRecorder(result=False),
+            ),
+            add_edit_handler=SimpleNamespace(
+                handle_pending_add_wizard=_CallRecorder(result=False),
+                handle_pending_add_confirmation=_CallRecorder(result=False),
+                parse_add_payload=lambda _x: {},
+            ),
             reminder_draft_manager=SimpleNamespace(handle_followup=_CallRecorder(result=False)),
             attachment_input_handler=SimpleNamespace(handle_message=attachment),
             text_input_handler=SimpleNamespace(handle_message=text_input),
-            _parse_add_payload=lambda _x: {},
-            _build_group_summary=lambda *_a, **_k: "",
+            job_runner=SimpleNamespace(build_group_summary=lambda *_a, **_k: ""),
             settings=SimpleNamespace(personal_chat_id=1),
         )
         handler = ChatPipelineHandler(bot)
@@ -82,18 +90,22 @@ class ChatPipelineTests(unittest.IsolatedAsyncioTestCase):
         attachment = _CallRecorder(result=False)
         text_input = _CallRecorder(result=True)
         bot = SimpleNamespace(
-            _handle_pending_model_wizard=_CallRecorder(result=False),
-            _handle_pending_topics_wizard=_CallRecorder(result=False),
-            _handle_pending_notes_wizard=_CallRecorder(result=False),
-            _handle_pending_delete_wizard=_CallRecorder(result=False),
-            _handle_pending_edit_wizard=_CallRecorder(result=False),
-            _handle_pending_add_wizard=_CallRecorder(result=False),
-            _handle_pending_add_confirmation=_CallRecorder(result=False),
+            list_sync_model_handler=SimpleNamespace(handle_pending_model_wizard=_CallRecorder(result=False)),
+            ui_wizard_handler=SimpleNamespace(
+                _handle_pending_topics_wizard=_CallRecorder(result=False),
+                _handle_pending_notes_wizard=_CallRecorder(result=False),
+                _handle_pending_delete_wizard=_CallRecorder(result=False),
+                _handle_pending_edit_wizard=_CallRecorder(result=False),
+            ),
+            add_edit_handler=SimpleNamespace(
+                handle_pending_add_wizard=_CallRecorder(result=False),
+                handle_pending_add_confirmation=_CallRecorder(result=False),
+                parse_add_payload=lambda _x: {"title": "x"},
+            ),
             reminder_draft_manager=SimpleNamespace(handle_followup=_CallRecorder(result=False)),
             attachment_input_handler=SimpleNamespace(handle_message=attachment),
             text_input_handler=SimpleNamespace(handle_message=text_input),
-            _parse_add_payload=lambda _x: {"title": "x"},
-            _build_group_summary=lambda *_a, **_k: "summary",
+            job_runner=SimpleNamespace(build_group_summary=lambda *_a, **_k: "summary"),
             settings=SimpleNamespace(personal_chat_id=1),
         )
         handler = ChatPipelineHandler(bot)

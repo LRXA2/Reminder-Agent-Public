@@ -19,7 +19,7 @@ from src.app.handlers.wizards.topics_wizard import TopicsWizard
 from src.app.handlers.wizards.ui_router import UiRouter
 
 if TYPE_CHECKING:
-    from src.app.reminder_bot import ReminderBot
+    from src.app.bot_orchestrator import ReminderBot
 
 
 class UiWizardHandler:

@@ -2,7 +2,7 @@
   "typeCheckingMode": "basic",
   "include": [
     "src/app/handlers",
-    "src/app/reminder_bot.py"
+    "src/app/bot_orchestrator.py"
   ],
   "exclude": [
     "tests",

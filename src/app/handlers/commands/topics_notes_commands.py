@@ -9,7 +9,7 @@ from src.app.handlers.reminder_formatting import format_reminder_detail
 from src.app.messages import msg
 
 if TYPE_CHECKING:
-    from src.app.reminder_bot import ReminderBot
+    from src.app.bot_orchestrator import ReminderBot
 
 
 class TopicsNotesHandler:
@@ -19,7 +19,7 @@ class TopicsNotesHandler:
     async def notes_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message:
             return
-        self.bot._clear_pending_flows(update.effective_chat.id, keep={"notes_wizard"})
+        self.bot.flow_state_service.clear_pending_flows(update.effective_chat.id, keep={"notes_wizard"})
 
         if context.args:
             try:
@@ -40,19 +40,19 @@ class TopicsNotesHandler:
         self.bot.pending_notes_wizards[update.effective_chat.id] = {"mode": "menu"}
         await update.message.reply_text(
             "Notes wizard. Choose: `list`, `view <id>`, `edit <id>`, `clear <id>`, or `cancel`.",
-            reply_markup=self.bot._notes_wizard_keyboard(),
+            reply_markup=self.bot.ui_wizard_handler._notes_wizard_keyboard(),
         )
 
     async def topics_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message:
             return
-        self.bot._clear_pending_flows(update.effective_chat.id, keep={"topics_wizard"})
+        self.bot.flow_state_service.clear_pending_flows(update.effective_chat.id, keep={"topics_wizard"})
 
         if not context.args:
             self.bot.pending_topics_wizards[update.effective_chat.id] = {"mode": "menu"}
             await update.message.reply_text(
                 "Topics wizard. Choose: `list`, `list all`, `create <name>`, `rename <id> <new>`, `delete <id>`, `merge <from> <to>`, or `cancel`.",
-                reply_markup=self.bot._topics_wizard_keyboard(),
+                reply_markup=self.bot.ui_wizard_handler._topics_wizard_keyboard(),
             )
             return
 
@@ -143,7 +143,7 @@ class TopicsNotesHandler:
     async def topic_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message:
             return
-        self.bot._clear_pending_flows(update.effective_chat.id)
+        self.bot.flow_state_service.clear_pending_flows(update.effective_chat.id)
         args = context.args or []
         if len(args) < 3:
             await update.message.reply_text(msg("usage_topic"))
@@ -165,7 +165,7 @@ class TopicsNotesHandler:
         if action == "add":
             missing = self.bot.db.has_missing_topics_for_chat(update.effective_chat.id, [topic_name])
             if missing:
-                await update.message.reply_text(self.bot._format_missing_topics_message(update.effective_chat.id, missing))
+                await update.message.reply_text(self.bot.reminder_logic_handler.format_missing_topics_message(update.effective_chat.id, missing))
                 return
             ok = self.bot.db.add_topic_to_reminder_for_chat(reminder_id, update.effective_chat.id, topic_name)
             if not ok:

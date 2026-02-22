@@ -32,12 +32,12 @@ class UiRouter:
 
         if data.startswith("ui:sync:"):
             mode = data.split(":", 2)[2]
-            await self.bot._run_sync_mode(update, mode)
+            await self.bot.list_sync_model_handler.run_sync_mode(update, mode)
             return
 
         if data.startswith("ui:list:"):
             mode = data.split(":", 2)[2]
-            await self.bot._run_list_mode(update, mode)
+            await self.bot.list_sync_model_handler.run_list_mode(update, mode)
             return
 
         if data.startswith("ui:notes:"):

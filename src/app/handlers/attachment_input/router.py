@@ -10,7 +10,7 @@ from src.app.handlers.intent_parsing import (
     has_summary_intent,
 )
 
-from .models import AttachmentRef
+from .attachment_types import AttachmentRef
 
 if TYPE_CHECKING:
     from telegram import Update

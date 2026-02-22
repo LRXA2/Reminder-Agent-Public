@@ -59,7 +59,11 @@ class EditWizard:
                     recurrence_rule=str(state.get("recurrence") or ""),
                 )
                 if ok:
-                    self.bot.db.set_reminder_topics_for_chat(reminder_id, chat_id, self.bot._split_topics(str(state.get("topic") or "")))
+                    self.bot.db.set_reminder_topics_for_chat(
+                        reminder_id,
+                        chat_id,
+                        self.bot.reminder_logic_handler.split_topics(str(state.get("topic") or "")),
+                    )
                     await target.reply_text(
                         format_reminder_brief(
                             reminder_id,
@@ -68,7 +72,7 @@ class EditWizard:
                             self.bot.settings.default_timezone,
                         )
                     )
-                    await self.bot._sync_calendar_upsert(reminder_id)
+                    await self.bot.calendar_sync_handler.sync_calendar_upsert(reminder_id)
                 else:
                     await target.reply_text(msg("error_update_failed", id=reminder_id))
                 self.bot.pending_edit_wizards.pop(chat_id, None)
@@ -127,7 +131,7 @@ class EditWizard:
                     if lowered in {"none", "clear"}:
                         state["due_at_utc"] = ""
                     else:
-                        due_dt, _conf = self.bot._parse_natural_datetime(raw)
+                        due_dt, _conf = self.bot.datetime_resolution_handler.parse_natural_datetime(raw)
                         if due_dt is None:
                             await target.reply_text("Could not parse date/time. Try again or `skip`.")
                             return True
@@ -173,15 +177,15 @@ class EditWizard:
                     reply_markup=self.ui._edit_topic_keyboard(),
                 )
                 return True
-            topics = self.bot._split_topics(raw)
+            topics = self.bot.reminder_logic_handler.split_topics(raw)
             missing_topics = self.bot.db.has_missing_topics_for_chat(chat_id, topics)
             if missing_topics:
-                await target.reply_text(self.bot._format_missing_topics_message(chat_id, missing_topics))
+                await target.reply_text(self.bot.reminder_logic_handler.format_missing_topics_message(chat_id, missing_topics))
                 return True
-            current_topics = self.bot._split_topics(str(state.get("topic") or ""))
+            current_topics = self.bot.reminder_logic_handler.split_topics(str(state.get("topic") or ""))
             if action == "add":
                 merged = current_topics + topics
-                state["topic"] = ",".join(self.bot._split_topics(",".join(merged)))
+                state["topic"] = ",".join(self.bot.reminder_logic_handler.split_topics(",".join(merged)))
             elif action == "remove":
                 remove_set = {t.lower() for t in topics}
                 state["topic"] = ",".join([t for t in current_topics if t.lower() not in remove_set])

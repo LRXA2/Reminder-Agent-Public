@@ -120,7 +120,7 @@ class NotesWizard:
             if detail is None:
                 continue
             detail_dict = dict(detail)
-            if not self.bot._is_notes_list_candidate(detail_dict):
+            if not self.bot.reminder_logic_handler.is_notes_list_candidate(detail_dict):
                 continue
             with_notes.append(detail_dict)
             if len(with_notes) >= 20:
@@ -144,5 +144,5 @@ class NotesWizard:
             recurrence_rule=str(row.get("recurrence_rule") or ""),
         )
         if ok:
-            await self.bot._sync_calendar_upsert(reminder_id)
+            await self.bot.calendar_sync_handler.sync_calendar_upsert(reminder_id)
         return ok

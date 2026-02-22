@@ -6,7 +6,7 @@ from types import SimpleNamespace
 try:
     from src.app.handlers.attachment_input.audio_input_handler import AudioInputHandler
     from src.app.handlers.attachment_input.document_input_handler import DocumentInputHandler
-    from src.app.handlers.attachment_input.models import AttachmentRef
+    from src.app.handlers.attachment_input.attachment_types import AttachmentRef
     from src.app.handlers.attachment_input.visual_input_handler import VisualInputHandler
 except Exception:  # pragma: no cover - optional runtime deps may be missing
     AudioInputHandler = None  # type: ignore[assignment]

@@ -180,6 +180,12 @@ class Database:
             self._conn.commit()
             return cursor
 
+    def _lastrowid_as_int(self, cursor: sqlite3.Cursor) -> int:
+        lastrowid = cursor.lastrowid
+        if lastrowid is None:
+            raise RuntimeError("Expected sqlite lastrowid after INSERT")
+        return int(lastrowid)
+
     def _create_topic_for_chat(self, chat_id_to_notify: str, display_name: str) -> int:
         now = datetime.now(timezone.utc).isoformat()
         normalized_display = display_name.strip()
@@ -206,7 +212,7 @@ class Database:
             """,
             (chat_id_to_notify, normalized_display, internal_name, now),
         )
-        return int(cursor.lastrowid)
+        return self._lastrowid_as_int(cursor)
 
     def _get_latest_topic_id_by_display(self, chat_id_to_notify: str, display_name: str) -> int | None:
         row = self._conn.execute(
@@ -271,7 +277,7 @@ class Database:
                     received_at_utc,
                 ),
             )
-            return int(cursor.lastrowid)
+            return self._lastrowid_as_int(cursor)
         except sqlite3.IntegrityError:
             row = self._execute(
                 "SELECT id FROM messages WHERE chat_id = ? AND telegram_message_id = ?",
@@ -335,7 +341,7 @@ class Database:
                 now,
             ),
         )
-        return int(cursor.lastrowid)
+        return self._lastrowid_as_int(cursor)
 
     def mark_done_and_archive(self, reminder_id: int) -> bool:
         now = datetime.now(timezone.utc).isoformat()

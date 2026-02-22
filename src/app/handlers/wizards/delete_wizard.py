@@ -80,7 +80,7 @@ class DeleteWizard:
             event_id = self.bot.db.get_calendar_event_id(reminder_id, provider="google")
             if event_id:
                 self.bot.db.add_calendar_event_tombstone(event_id, provider="google")
-            await self.bot._sync_calendar_delete(reminder_id)
+            await self.bot.calendar_sync_handler.sync_calendar_delete(reminder_id)
             ok = self.bot.db.delete_reminder_permanently_for_chat(reminder_id, update.effective_chat.id)
             if ok:
                 await target.reply_text(msg("status_deleted", id=reminder_id))

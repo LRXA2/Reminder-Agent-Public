@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import threading
 from datetime import timezone
@@ -97,9 +98,13 @@ class UserbotIngestService:
                 received_at_utc=msg_date.astimezone(timezone.utc).isoformat(),
             )
 
-        await client.start()
+        start_result = client.start()
+        if inspect.isawaitable(start_result):
+            await start_result
         LOGGER.info("Userbot client connected as account session '%s'", self.settings.userbot_session_name)
-        await client.run_until_disconnected()
+        disconnect_result = client.run_until_disconnected()
+        if inspect.isawaitable(disconnect_result):
+            await disconnect_result
 
     async def send_message_if_allowed(self, chat_id: int, text: str) -> bool:
         if not self.settings.userbot_allow_sending:

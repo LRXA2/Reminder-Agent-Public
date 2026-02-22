@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Awaitable, Callable
 from src.app.handlers.operation_status import OperationStatus
 from src.app.messages import msg
 
-from .models import AttachmentRef
+from .attachment_types import AttachmentRef
 
 if TYPE_CHECKING:
     from telegram import Update

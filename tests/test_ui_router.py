@@ -72,6 +72,38 @@ class UiRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(notes_handler.calls), 1)
         self.assertEqual(notes_handler.calls[0][0][1], "list")
 
+    async def test_sync_callback_routes_to_list_sync_handler(self) -> None:
+        run_sync_mode = _AwaitableCall()
+        bot = SimpleNamespace(
+            settings=SimpleNamespace(allowed_telegram_user_ids=[]),
+            list_sync_model_handler=SimpleNamespace(run_sync_mode=run_sync_mode),
+        )
+        ui = SimpleNamespace(bot=bot)
+        router = UiRouter(ui)
+        query = _FakeQuery("ui:sync:import")
+        update = SimpleNamespace(callback_query=query, effective_chat=SimpleNamespace(id=100))
+
+        await router.handle(update, SimpleNamespace())
+
+        self.assertEqual(len(run_sync_mode.calls), 1)
+        self.assertEqual(run_sync_mode.calls[0][0][1], "import")
+
+    async def test_list_callback_routes_to_list_sync_handler(self) -> None:
+        run_list_mode = _AwaitableCall()
+        bot = SimpleNamespace(
+            settings=SimpleNamespace(allowed_telegram_user_ids=[]),
+            list_sync_model_handler=SimpleNamespace(run_list_mode=run_list_mode),
+        )
+        ui = SimpleNamespace(bot=bot)
+        router = UiRouter(ui)
+        query = _FakeQuery("ui:list:today")
+        update = SimpleNamespace(callback_query=query, effective_chat=SimpleNamespace(id=100))
+
+        await router.handle(update, SimpleNamespace())
+
+        self.assertEqual(len(run_list_mode.calls), 1)
+        self.assertEqual(run_list_mode.calls[0][0][1], "today")
+
     async def test_topics_list_all_maps_to_list_all_text(self) -> None:
         topics_handler = _AwaitableCall()
         bot = SimpleNamespace(settings=SimpleNamespace(allowed_telegram_user_ids=[]))

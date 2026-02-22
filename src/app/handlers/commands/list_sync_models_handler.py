@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
@@ -11,7 +13,7 @@ from src.app.handlers.reminder_formatting import format_reminder_list_item
 from src.app.messages import msg
 
 if TYPE_CHECKING:
-    from src.app.reminder_bot import ReminderBot
+    from src.app.bot_orchestrator import ReminderBot
 
 
 LOGGER = logging.getLogger(__name__)
@@ -60,7 +62,7 @@ class ListSyncModelHandler:
                 self.bot.ollama.set_vision_model(chosen)
                 self.bot.db.set_app_setting("ollama_vision_model", chosen)
                 self.bot.vision_model_tags.add(chosen)
-                self.bot._save_vision_model_tags()
+                self.bot.vision_model_tag_handler.save_tags()
                 await update.message.reply_text(msg("status_model_set_vision", model=chosen))
             else:
                 self.bot.ollama.set_text_model(chosen)
@@ -76,7 +78,7 @@ class ListSyncModelHandler:
     async def list_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message:
             return
-        self.bot._clear_pending_flows(update.effective_chat.id)
+        self.bot.flow_state_service.clear_pending_flows(update.effective_chat.id)
 
         if not context.args:
             await update.message.reply_text(
@@ -120,7 +122,7 @@ class ListSyncModelHandler:
                     return
                 rows = self.bot.db.list_reminders("due_days", value[:-1])
             elif mode in {"today", "tomorrow", "overdue"}:
-                rows = self.bot._list_mode_in_local_timezone(mode)
+                rows = self.list_mode_in_local_timezone(mode)
             else:
                 await update.message.reply_text(msg("error_list_unknown"))
                 return
@@ -141,11 +143,36 @@ class ListSyncModelHandler:
         elif mode == "archived":
             rows = self.bot.db.list_archived_reminders_for_chat(update.effective_chat.id)
         elif mode in {"today", "tomorrow", "overdue"}:
-            rows = self.bot._list_mode_in_local_timezone(mode)
+            rows = self.list_mode_in_local_timezone(mode)
         else:
             await target.reply_text(msg("usage_list"))
             return
         await self.reply_list_rows(update, mode, rows)
+
+    def list_mode_in_local_timezone(self, mode: str) -> list:
+        try:
+            tz = ZoneInfo(self.bot.settings.default_timezone)
+        except Exception:
+            tz = timezone.utc
+        now_local = datetime.now(tz)
+        start_today_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        if mode == "today":
+            start_utc = start_today_local.astimezone(timezone.utc).isoformat()
+            end_utc = (start_today_local + timedelta(days=1)).astimezone(timezone.utc).isoformat()
+            return self.bot.db.list_reminders_between(start_utc, end_utc)
+
+        if mode == "tomorrow":
+            start_local = start_today_local + timedelta(days=1)
+            start_utc = start_local.astimezone(timezone.utc).isoformat()
+            end_utc = (start_local + timedelta(days=1)).astimezone(timezone.utc).isoformat()
+            return self.bot.db.list_reminders_between(start_utc, end_utc)
+
+        if mode == "overdue":
+            cutoff_utc = now_local.astimezone(timezone.utc).isoformat()
+            return self.bot.db.list_reminders_before(cutoff_utc)
+
+        return []
 
     async def reply_list_rows(self, update: Update, mode: str, rows) -> None:
         target = update.message or (update.callback_query.message if update.callback_query else None)
@@ -165,7 +192,7 @@ class ListSyncModelHandler:
     async def sync_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message or not update.effective_user:
             return
-        self.bot._clear_pending_flows(update.effective_chat.id)
+        self.bot.flow_state_service.clear_pending_flows(update.effective_chat.id)
         if not self.bot.calendar_sync.is_enabled():
             await update.message.reply_text(msg("error_sync_disabled"))
             return
@@ -205,14 +232,14 @@ class ListSyncModelHandler:
         failed_pushes: list[tuple[int, str]] = []
 
         if mode == "import":
-            pull_created, pull_updated = await self.bot._sync_from_google_calendar(update, allow_update_existing=True)
+            pull_created, pull_updated = await self.bot.calendar_sync_handler.sync_from_google_calendar(update, allow_update_existing=True)
             push_total, push_ok = 0, 0
         elif mode == "export":
-            push_total, push_ok, failed_pushes = await self.bot._sync_to_google_calendar(update)
+            push_total, push_ok, failed_pushes = await self.bot.calendar_sync_handler.sync_to_google_calendar(update)
             pull_created, pull_updated = 0, 0
         else:
-            push_total, push_ok, failed_pushes = await self.bot._sync_to_google_calendar(update)
-            pull_created, pull_updated = await self.bot._sync_from_google_calendar(update, allow_update_existing=False)
+            push_total, push_ok, failed_pushes = await self.bot.calendar_sync_handler.sync_to_google_calendar(update)
+            pull_created, pull_updated = await self.bot.calendar_sync_handler.sync_from_google_calendar(update, allow_update_existing=False)
 
         LOGGER.info(
             "Manual /sync done mode=%s push_ok=%s/%s pull_created=%s pull_updated=%s",
@@ -241,7 +268,7 @@ class ListSyncModelHandler:
     async def models_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message:
             return
-        self.bot._clear_pending_flows(update.effective_chat.id)
+        self.bot.flow_state_service.clear_pending_flows(update.effective_chat.id)
         models = self.bot.ollama.list_models()
         if not models:
             await update.message.reply_text(msg("error_models_empty"))
@@ -265,7 +292,7 @@ class ListSyncModelHandler:
     async def model_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message:
             return
-        self.bot._clear_pending_flows(update.effective_chat.id, keep={"model_wizard"})
+        self.bot.flow_state_service.clear_pending_flows(update.effective_chat.id, keep={"model_wizard"})
 
         if not context.args:
             models = self.bot.ollama.list_models()
@@ -289,11 +316,11 @@ class ListSyncModelHandler:
                 return
             if first == "tag":
                 self.bot.vision_model_tags.add(target)
-                self.bot._save_vision_model_tags()
+                self.bot.vision_model_tag_handler.save_tags()
                 await update.message.reply_text(msg("status_model_tagged", model=target))
             else:
                 self.bot.vision_model_tags.discard(target)
-                self.bot._save_vision_model_tags()
+                self.bot.vision_model_tag_handler.save_tags()
                 await update.message.reply_text(msg("status_model_untagged", model=target))
             return
 
@@ -315,7 +342,7 @@ class ListSyncModelHandler:
             self.bot.ollama.set_vision_model(chosen)
             self.bot.db.set_app_setting("ollama_vision_model", chosen)
             self.bot.vision_model_tags.add(chosen)
-            self.bot._save_vision_model_tags()
+            self.bot.vision_model_tag_handler.save_tags()
             await update.message.reply_text(msg("status_model_set_vision", model=chosen))
             return
 

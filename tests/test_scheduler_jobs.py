@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from src.app.handlers.job_runner import JobRunner
+from src.app.handlers.services.scheduler_jobs import JobRunner
 
 
 class _FakeBotSender:
@@ -14,7 +14,7 @@ class _FakeBotSender:
         self.calls.append({"chat_id": chat_id, "text": text})
 
 
-class JobRunnerTests(unittest.IsolatedAsyncioTestCase):
+class SchedulerJobsTests(unittest.IsolatedAsyncioTestCase):
     async def test_process_due_reminders_marks_notified_and_updates_recurrence(self) -> None:
         sender = _FakeBotSender()
         marked: list[int] = []
@@ -38,8 +38,8 @@ class JobRunnerTests(unittest.IsolatedAsyncioTestCase):
         bot = SimpleNamespace(
             db=db,
             app=SimpleNamespace(bot=sender),
-            _compute_next_due=lambda _due, _recurrence: "2026-03-11T09:00:00+00:00",
-            _sync_calendar_upsert=lambda rid: _async_append(sync_calls, rid),
+            reminder_logic_handler=SimpleNamespace(compute_next_due=lambda _due, _recurrence: "2026-03-11T09:00:00+00:00"),
+            calendar_sync_handler=SimpleNamespace(sync_calendar_upsert=lambda rid: _async_append(sync_calls, rid)),
         )
         runner = JobRunner(bot)
 

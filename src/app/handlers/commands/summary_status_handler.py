@@ -8,7 +8,7 @@ from telegram.ext import ContextTypes
 from src.app.messages import msg
 
 if TYPE_CHECKING:
-    from src.app.reminder_bot import ReminderBot
+    from src.app.bot_orchestrator import ReminderBot
 
 
 class SummaryStatusHandler:
@@ -18,7 +18,7 @@ class SummaryStatusHandler:
     async def summary_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message:
             return
-        self.bot._clear_pending_flows(update.effective_chat.id)
+        self.bot.flow_state_service.clear_pending_flows(update.effective_chat.id)
 
         target_chat_id = self.bot.settings.monitored_group_chat_id
         if context.args:
@@ -36,7 +36,7 @@ class SummaryStatusHandler:
 
         await update.message.reply_text(msg("status_summary_start"))
         try:
-            summary = await self.bot._build_group_summary(chat_id=target_chat_id)
+            summary = await self.bot.job_runner.build_group_summary(chat_id=target_chat_id)
             await update.message.reply_text(summary)
             if summary.startswith("No recent messages found for chat"):
                 return
@@ -53,7 +53,7 @@ class SummaryStatusHandler:
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message:
             return
-        self.bot._clear_pending_flows(update.effective_chat.id)
+        self.bot.flow_state_service.clear_pending_flows(update.effective_chat.id)
 
         ollama_ready = self.bot.ollama.ensure_server(
             autostart=False,

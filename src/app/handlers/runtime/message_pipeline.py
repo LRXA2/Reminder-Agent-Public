@@ -6,7 +6,7 @@ if TYPE_CHECKING:
     from telegram import Update
     from telegram.ext import ContextTypes
 
-    from src.app.reminder_bot import ReminderBot
+    from src.app.bot_orchestrator import ReminderBot
 
 
 class ChatPipelineHandler:
@@ -34,19 +34,19 @@ class ChatPipelineHandler:
 
         await self.bot.text_input_handler.handle_message(
             update,
-            parse_add_payload=self.bot._parse_add_payload,
-            build_group_summary=self.bot._build_group_summary,
+            parse_add_payload=self.bot.add_edit_handler.parse_add_payload,
+            build_group_summary=self.bot.job_runner.build_group_summary,
         )
 
     def pending_workflow_handlers(self):
         return [
-            self.bot._handle_pending_model_wizard,
-            self.bot._handle_pending_topics_wizard,
-            self.bot._handle_pending_notes_wizard,
-            self.bot._handle_pending_delete_wizard,
-            self.bot._handle_pending_edit_wizard,
-            self.bot._handle_pending_add_wizard,
-            self.bot._handle_pending_add_confirmation,
+            self.bot.list_sync_model_handler.handle_pending_model_wizard,
+            self.bot.ui_wizard_handler._handle_pending_topics_wizard,
+            self.bot.ui_wizard_handler._handle_pending_notes_wizard,
+            self.bot.ui_wizard_handler._handle_pending_delete_wizard,
+            self.bot.ui_wizard_handler._handle_pending_edit_wizard,
+            self.bot.add_edit_handler.handle_pending_add_wizard,
+            self.bot.add_edit_handler.handle_pending_add_confirmation,
             self.bot.reminder_draft_manager.handle_followup,
         ]
 

@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 
 try:
-    from src.app.reminder_bot import ReminderBot
+    from src.app.bot_orchestrator import ReminderBot
     from src.app.handlers.wizards import UiWizardHandler
 except Exception:  # pragma: no cover - optional runtime deps may be missing in CI/dev env
     ReminderBot = None  # type: ignore[assignment]
@@ -40,7 +40,7 @@ class NotesWizardCallbackTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.bot.pending_notes_wizards[1001] = {"mode": "menu"}
-        handled = await self.bot._handle_pending_notes_wizard(update, "list")
+        handled = await self.bot.ui_wizard_handler._handle_pending_notes_wizard(update, "list")
 
         self.assertTrue(handled)
         self.assertGreaterEqual(len(target.calls), 1)
@@ -56,7 +56,7 @@ class NotesWizardCallbackTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.bot.pending_notes_wizards[1002] = {"mode": "menu"}
-        handled = await self.bot._handle_pending_notes_wizard(update, "cancel")
+        handled = await self.bot.ui_wizard_handler._handle_pending_notes_wizard(update, "cancel")
 
         self.assertTrue(handled)
         self.assertNotIn(1002, self.bot.pending_notes_wizards)
