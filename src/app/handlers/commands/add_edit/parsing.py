@@ -53,14 +53,18 @@ class AddEditPayloadParser:
                 }.get(token, token)
                 text = text[: bang_priority_match.start()] + text[bang_priority_match.end() :]
 
-        recur_match = re.search(r"every\s*:\s*(daily|weekly|monthly)\b", text, re.IGNORECASE)
+        recur_match = re.search(r"every\s*:\s*(daily|weekly|biweekly|fortnightly|monthly)\b", text, re.IGNORECASE)
         recurrence = recur_match.group(1).lower() if recur_match else ""
+        if recurrence == "fortnightly":
+            recurrence = "biweekly"
         if recur_match:
             text = text[: recur_match.start()] + text[recur_match.end() :]
         else:
-            recur_short_match = re.search(r"(?:^|\s)@(daily|weekly|monthly)\b", text, re.IGNORECASE)
+            recur_short_match = re.search(r"(?:^|\s)@(daily|weekly|biweekly|fortnightly|monthly)\b", text, re.IGNORECASE)
             if recur_short_match:
                 recurrence = recur_short_match.group(1).lower()
+                if recurrence == "fortnightly":
+                    recurrence = "biweekly"
                 text = text[: recur_short_match.start()] + text[recur_short_match.end() :]
 
         due_dt = None
@@ -159,9 +163,11 @@ class AddEditPayloadParser:
         if priority_match:
             priority = priority_match.group(1).lower()
 
-        recur_match = re.search(r"every\s*:\s*(daily|weekly|monthly|none)\b", text, re.IGNORECASE)
+        recur_match = re.search(r"every\s*:\s*(daily|weekly|biweekly|fortnightly|monthly|none)\b", text, re.IGNORECASE)
         if recur_match:
             recurrence = recur_match.group(1).lower()
+            if recurrence == "fortnightly":
+                recurrence = "biweekly"
             if recurrence == "none":
                 recurrence = ""
 

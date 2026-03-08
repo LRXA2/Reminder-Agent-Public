@@ -19,15 +19,65 @@ class TopicsNotesHandler:
     async def notes_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message:
             return
-        self.bot.flow_state_service.clear_pending_flows(update.effective_chat.id, keep={"notes_wizard"})
+        chat_id = update.effective_chat.id
+        self.bot.flow_state_service.clear_pending_flows(chat_id, keep={"notes_wizard"})
 
         if context.args:
+            action = str(context.args[0]).strip().lower()
+
+            if action == "list":
+                rows = self.bot.ui_wizard_handler._collect_notes_candidates(chat_id)
+                if not rows:
+                    await update.message.reply_text(msg("error_notes_empty"))
+                    return
+                lines = ["Reminders with notes:"]
+                for row in rows:
+                    lines.append(f"- #{row.get('id')} {row.get('title')}")
+                await update.message.reply_text("\n".join(lines))
+                return
+
+            if action in {"view", "edit", "clear"}:
+                if len(context.args) < 2:
+                    await update.message.reply_text(msg("error_id_number"))
+                    return
+                try:
+                    reminder_id = int(context.args[1])
+                except ValueError:
+                    await update.message.reply_text(msg("error_id_number"))
+                    return
+
+                row = self.bot.db.get_reminder_by_id_for_chat(reminder_id, chat_id)
+                if row is None:
+                    await update.message.reply_text(msg("error_not_found", id=reminder_id))
+                    return
+
+                if action == "view":
+                    notes = str(row["notes"] or "").strip()
+                    if not notes:
+                        await update.message.reply_text(msg("error_notes_empty_for_id", id=reminder_id))
+                        return
+                    await update.message.reply_text(format_reminder_detail(dict(row), self.bot.settings.default_timezone))
+                    return
+
+                if action == "clear":
+                    ok = await self.bot.ui_wizard_handler._update_reminder_notes(chat_id, reminder_id, "")
+                    if ok:
+                        await update.message.reply_text(f"Cleared notes for #{reminder_id}.")
+                    else:
+                        await update.message.reply_text(msg("error_not_found", id=reminder_id))
+                    return
+
+                self.bot.pending_notes_wizards[chat_id] = {"mode": "edit_text", "id": str(reminder_id)}
+                await update.message.reply_text("Send new notes text now, or `clear` to remove, or `cancel`.")
+                return
+
             try:
                 reminder_id = int(context.args[0])
             except ValueError:
-                await update.message.reply_text(msg("error_id_number"))
+                await update.message.reply_text(msg("usage_notes"))
                 return
-            row = self.bot.db.get_reminder_by_id_for_chat(reminder_id, update.effective_chat.id)
+
+            row = self.bot.db.get_reminder_by_id_for_chat(reminder_id, chat_id)
             if row is None:
                 await update.message.reply_text(msg("error_not_found", id=reminder_id))
                 return
@@ -37,7 +87,8 @@ class TopicsNotesHandler:
                 return
             await update.message.reply_text(format_reminder_detail(dict(row), self.bot.settings.default_timezone))
             return
-        self.bot.pending_notes_wizards[update.effective_chat.id] = {"mode": "menu"}
+
+        self.bot.pending_notes_wizards[chat_id] = {"mode": "menu"}
         await update.message.reply_text(
             "Notes wizard. Choose: `list`, `view <id>`, `edit <id>`, `clear <id>`, or `cancel`.",
             reply_markup=self.bot.ui_wizard_handler._notes_wizard_keyboard(),

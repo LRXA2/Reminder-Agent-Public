@@ -101,6 +101,8 @@ class DateTimeResolutionHandler:
                 "RETURN_AS_TIMEZONE_AWARE": True,
                 "PREFER_DATES_FROM": "future",
                 "RELATIVE_BASE": now_local,
+                "DATE_ORDER": "DMY",
+                "PREFER_LOCALE_DATE_ORDER": False,
             },
         )
         if due_dt is not None and due_mode == "all_day":

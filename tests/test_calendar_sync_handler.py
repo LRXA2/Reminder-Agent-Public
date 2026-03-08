@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from src.app.handlers.services.calendar_sync_handler import CalendarSyncHandler
+from src.app.handlers.services.calendar.sync_handler import CalendarSyncHandler
 
 
 class _FakeSettings:

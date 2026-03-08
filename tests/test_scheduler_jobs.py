@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from src.app.handlers.services.scheduler_jobs import JobRunner
+from src.app.handlers.services.scheduler.jobs import JobRunner
 
 
 class _FakeBotSender:

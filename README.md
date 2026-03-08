@@ -102,6 +102,40 @@ The bot proposes drafts first, then you confirm:
 - `remove <n>`
 - `cancel`
 
+## Gmail filter tuning (optional)
+
+`GMAIL_ACCOUNTS_JSON` supports lightweight per-account filter tuning fields:
+
+- `risky_tlds`
+- `shortener_domains`
+- `suspicious_phrases`
+- `promotional_phrases`
+- `urgent_subject_phrases`
+
+You can also keep those keys in a separate JSON file and point to it with `filter_keys_file` in each account entry.
+
+Example account entry:
+
+```json
+{
+  "account_id": "work",
+  "credentials_file": "secrets/work_credentials.json",
+  "token_file": "secrets/work_token.json",
+  "query": "label:inbox is:unread newer_than:2d",
+  "sender_allowlist": ["boss@company.com"],
+  "sender_trusted_domains": ["company.com"],
+  "filter_keys_file": "D:/secrets/reminder_agent/work_filter_keys.json",
+  "shortener_domains": ["bit.ly", "tinyurl.com"],
+  "suspicious_phrases": ["verify your account", "urgent action required"],
+  "promotional_phrases": ["unsubscribe", "newsletter"],
+  "urgent_subject_phrases": ["urgent", "action required"],
+  "risky_tlds": ["zip", "click", "xyz"],
+  "telegram_chat_id": 123456789
+}
+```
+
+If `filter_keys_file` is set, values from that file override the same inline keys for that account.
+
 ## Tests
 
 Run all tests:

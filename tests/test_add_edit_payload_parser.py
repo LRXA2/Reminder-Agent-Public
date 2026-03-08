@@ -32,6 +32,13 @@ class AddEditPayloadParserTests(unittest.TestCase):
         parsed = self.parser.parse_edit_payload("every:none")
         self.assertEqual(parsed["recurrence"], "")
 
+    def test_parse_edit_payload_recurrence_biweekly_and_fortnightly(self) -> None:
+        parsed_biweekly = self.parser.parse_edit_payload("every:biweekly")
+        self.assertEqual(parsed_biweekly["recurrence"], "biweekly")
+
+        parsed_fortnightly = self.parser.parse_edit_payload("every:fortnightly")
+        self.assertEqual(parsed_fortnightly["recurrence"], "biweekly")
+
     def test_parse_add_payload_requires_due_or_no_due_marker(self) -> None:
         parsed = self.parser.parse_add_payload("buy milk")
         self.assertIn("error", parsed)

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 try:
-    from src.app.handlers.services.datetime_resolution_handler import DateTimeResolutionHandler
+    from src.app.handlers.services.datetime.resolution_handler import DateTimeResolutionHandler
 except Exception:  # pragma: no cover - optional runtime deps may be missing
     DateTimeResolutionHandler = None  # type: ignore[assignment]
 

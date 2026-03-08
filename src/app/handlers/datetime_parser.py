@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 import dateparser
@@ -37,27 +38,14 @@ def parse_datetime_text(raw_text: str, timezone_name: str, now_local: datetime |
         confidence = "high" if _has_explicit_time(text) else "medium"
         return DateParseResult(dt=dt_value, confidence=confidence, matched_text=phrase, strategy="relative")
 
-    parsed = dateparser.parse(
-        text,
-        settings={
-            "TIMEZONE": timezone_name,
-            "RETURN_AS_TIMEZONE_AWARE": True,
-            "PREFER_DATES_FROM": "future",
-            "RELATIVE_BASE": now,
-        },
-    )
+    parsed = dateparser.parse(text, settings=_dateparser_settings(timezone_name, now))
     if parsed is not None:
         parsed = _apply_time_if_missing(parsed, text, _has_explicit_time(text))
         return DateParseResult(dt=parsed, confidence=_estimate_confidence(text), matched_text=text, strategy="direct")
 
     found = search_dates(
         text,
-        settings={
-            "TIMEZONE": timezone_name,
-            "RETURN_AS_TIMEZONE_AWARE": True,
-            "PREFER_DATES_FROM": "future",
-            "RELATIVE_BASE": now,
-        },
+        settings=_dateparser_settings(timezone_name, now),
     )
     if not found:
         return DateParseResult(dt=None, confidence="low", matched_text="", strategy="none")
@@ -161,12 +149,7 @@ def _extract_explicit_date(text: str, timezone_name: str, now_local: datetime) -
             raw = match.group(0).strip()
             parsed = dateparser.parse(
                 raw,
-                settings={
-                    "TIMEZONE": timezone_name,
-                    "RETURN_AS_TIMEZONE_AWARE": True,
-                    "PREFER_DATES_FROM": "future",
-                    "RELATIVE_BASE": now_local,
-                },
+                settings=_dateparser_settings(timezone_name, now_local),
             )
             if parsed is None:
                 continue
@@ -271,3 +254,17 @@ def _pick_best_search_date(found: list[tuple[str, datetime]]) -> tuple[str, date
             best_score = score
             best = (phrase, dt_value)
     return best
+
+
+def _dateparser_settings(timezone_name: str, now_local: datetime) -> Any:
+    return cast(
+        Any,
+        {
+        "TIMEZONE": timezone_name,
+        "RETURN_AS_TIMEZONE_AWARE": True,
+        "PREFER_DATES_FROM": "future",
+        "RELATIVE_BASE": now_local,
+        "DATE_ORDER": "DMY",
+        "PREFER_LOCALE_DATE_ORDER": False,
+        },
+    )

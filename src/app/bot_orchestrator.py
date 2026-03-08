@@ -23,11 +23,12 @@ from src.app.handlers.commands.topics_notes_commands import TopicsNotesHandler
 from src.app.handlers.runtime.message_pipeline import ChatPipelineHandler
 from src.app.handlers.runtime.flow_state_service import FlowStateService
 from src.app.handlers.runtime.message_ingest_handler import MessageIngestHandler
-from src.app.handlers.services.calendar_sync_handler import CalendarSyncHandler
-from src.app.handlers.services.datetime_resolution_handler import DateTimeResolutionHandler
-from src.app.handlers.services.scheduler_jobs import JobRunner
-from src.app.handlers.services.reminder_rules import ReminderLogicHandler
-from src.app.handlers.services.vision_model_tags import VisionModelTagHandler
+from src.app.handlers.services.calendar.sync_handler import CalendarSyncHandler
+from src.app.handlers.services.datetime.resolution_handler import DateTimeResolutionHandler
+from src.app.handlers.services.gmail.ingest_handler import GmailIngestHandler
+from src.app.handlers.services.scheduler.jobs import JobRunner
+from src.app.handlers.services.reminders.rules import ReminderLogicHandler
+from src.app.handlers.services.vision.model_tags import VisionModelTagHandler
 from src.app.handlers.reminder_draft import ReminderDraftManager
 from src.app.handlers.text_input import TextInputHandler
 from src.app.handlers.wizards import UiWizardHandler
@@ -90,6 +91,7 @@ class ReminderBot:
         self.userbot_ingest = UserbotIngestService(self.settings, self.db)
         self.calendar_sync = GoogleCalendarSyncService(self.settings, self.db)
         self.calendar_sync_handler = CalendarSyncHandler(self)
+        self.gmail_ingest_handler = GmailIngestHandler(self)
         self.pending_add_confirmations: dict[int, list[dict[str, str]]] = {}
         self.pending_add_wizards: dict[int, dict[str, str]] = {}
         self.pending_edit_wizards: dict[int, dict[str, str]] = {}
@@ -160,6 +162,7 @@ class ReminderBot:
         self.app.add_handler(CommandHandler("models", self.list_sync_model_handler.models_command, filters=allow_filter))
         self.app.add_handler(CommandHandler("model", self.list_sync_model_handler.model_command, filters=allow_filter))
         self.app.add_handler(CommandHandler("status", self.summary_status_handler.status_command, filters=allow_filter))
+        self.app.add_handler(CommandHandler("gmail", self.summary_status_handler.gmail_command, filters=allow_filter))
         self.app.add_handler(
             MessageHandler(
                 (filters.PHOTO | filters.Document.ALL | filters.AUDIO | filters.VOICE | filters.VIDEO)
@@ -175,6 +178,11 @@ class ReminderBot:
         self.scheduler.add_job(self.job_runner.cleanup_archives, "cron", hour=1, minute=0)
         self.scheduler.add_job(self.job_runner.cleanup_messages, "cron", hour=1, minute=15)
         self.scheduler.add_job(self.job_runner.process_auto_summaries, "interval", minutes=1)
+        self.scheduler.add_job(
+            self.job_runner.process_gmail_updates,
+            "interval",
+            minutes=max(1, self.settings.gmail_poll_interval_minutes),
+        )
         digest_times = self.settings.digest_times_local or (
             (self.settings.digest_hour_local, self.settings.digest_minute_local),
         )
@@ -201,7 +209,7 @@ class ReminderBot:
                 await update.message.reply_text(text)
                 return
             await update.message.reply_text(
-                HELP_TEXT + "\nUnknown topic. Try: reminders, notes, summaries, files, models, sync, examples"
+                HELP_TEXT + "\nUnknown topic. Try: reminders, notes, summaries, files, models, sync, gmail, examples"
             )
             return
 
@@ -275,9 +283,9 @@ class ReminderBot:
     def _help_keyboard(self) -> InlineKeyboardMarkup:
         rows = [
             [InlineKeyboardButton("Reminders", callback_data="help:reminders"), InlineKeyboardButton("Notes", callback_data="help:notes")],
-            [InlineKeyboardButton("Summaries", callback_data="help:summaries")],
-            [InlineKeyboardButton("Files", callback_data="help:files"), InlineKeyboardButton("Models", callback_data="help:models")],
-            [InlineKeyboardButton("Sync", callback_data="help:sync"), InlineKeyboardButton("Examples", callback_data="help:examples")],
+            [InlineKeyboardButton("Summaries", callback_data="help:summaries"), InlineKeyboardButton("Files", callback_data="help:files")],
+            [InlineKeyboardButton("Models", callback_data="help:models"), InlineKeyboardButton("Sync", callback_data="help:sync")],
+            [InlineKeyboardButton("Gmail", callback_data="help:gmail"), InlineKeyboardButton("Examples", callback_data="help:examples")],
             [InlineKeyboardButton("Cancel", callback_data="help:cancel")],
         ]
         return InlineKeyboardMarkup(rows)

@@ -129,9 +129,39 @@ class Database:
                 PRIMARY KEY(provider, event_id)
             );
             """,
+            """
+            CREATE TABLE IF NOT EXISTS gmail_accounts_state (
+                account_id TEXT PRIMARY KEY,
+                last_history_id TEXT,
+                last_checked_at_utc TEXT NOT NULL,
+                last_error TEXT
+            );
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS gmail_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id TEXT NOT NULL,
+                gmail_message_id TEXT NOT NULL,
+                thread_id TEXT,
+                from_email TEXT,
+                subject TEXT,
+                snippet TEXT,
+                internal_date_utc TEXT,
+                label_ids TEXT,
+                importance_score REAL NOT NULL DEFAULT 0,
+                importance_reason TEXT,
+                is_important INTEGER NOT NULL DEFAULT 0,
+                summary_text TEXT,
+                processed_at_utc TEXT NOT NULL,
+                notified_at_utc TEXT,
+                UNIQUE(account_id, gmail_message_id)
+            );
+            """,
             "CREATE INDEX IF NOT EXISTS idx_messages_chat_received ON messages(chat_id, received_at_utc);",
             "CREATE INDEX IF NOT EXISTS idx_reminders_status_due ON reminders(status, due_at_utc);",
             "CREATE INDEX IF NOT EXISTS idx_reminders_status_priority_due ON reminders(status, priority, due_at_utc);",
+            "CREATE INDEX IF NOT EXISTS idx_gmail_messages_account_processed ON gmail_messages(account_id, processed_at_utc DESC);",
+            "CREATE INDEX IF NOT EXISTS idx_gmail_messages_account_thread_notified ON gmail_messages(account_id, thread_id, notified_at_utc);",
         ]
         with self._lock:
             for stmt in statements:
@@ -1073,3 +1103,177 @@ class Database:
             """,
             (key, value, now),
         )
+
+    def upsert_gmail_account_state(
+        self,
+        account_id: str,
+        last_checked_at_utc: str,
+        last_error: str = "",
+        last_history_id: str = "",
+    ) -> None:
+        self._execute(
+            """
+            INSERT INTO gmail_accounts_state(account_id, last_history_id, last_checked_at_utc, last_error)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(account_id) DO UPDATE SET
+                last_history_id=excluded.last_history_id,
+                last_checked_at_utc=excluded.last_checked_at_utc,
+                last_error=excluded.last_error
+            """,
+            (account_id, last_history_id, last_checked_at_utc, last_error),
+        )
+
+    def get_gmail_account_state(self, account_id: str) -> sqlite3.Row | None:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT account_id, last_history_id, last_checked_at_utc, last_error FROM gmail_accounts_state WHERE account_id = ?",
+                (account_id,),
+            ).fetchone()
+
+    def list_gmail_account_states(self) -> list[sqlite3.Row]:
+        with self._lock:
+            return list(
+                self._conn.execute(
+                    "SELECT account_id, last_history_id, last_checked_at_utc, last_error FROM gmail_accounts_state ORDER BY account_id"
+                ).fetchall()
+            )
+
+    def is_gmail_message_processed(self, account_id: str, gmail_message_id: str) -> bool:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM gmail_messages WHERE account_id = ? AND gmail_message_id = ? LIMIT 1",
+                (account_id, gmail_message_id),
+            ).fetchone()
+        return row is not None
+
+    def save_gmail_processed_message(
+        self,
+        account_id: str,
+        gmail_message_id: str,
+        thread_id: str,
+        from_email: str,
+        subject: str,
+        snippet: str,
+        internal_date_utc: str,
+        label_ids: list[str],
+        importance_score: float,
+        importance_reason: str,
+        is_important: bool,
+        summary_text: str,
+        notified: bool,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        label_ids_text = ",".join(label_ids)
+        notified_at_utc = now if notified else ""
+        self._execute(
+            """
+            INSERT INTO gmail_messages(
+                account_id,
+                gmail_message_id,
+                thread_id,
+                from_email,
+                subject,
+                snippet,
+                internal_date_utc,
+                label_ids,
+                importance_score,
+                importance_reason,
+                is_important,
+                summary_text,
+                processed_at_utc,
+                notified_at_utc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(account_id, gmail_message_id) DO UPDATE SET
+                thread_id=excluded.thread_id,
+                from_email=excluded.from_email,
+                subject=excluded.subject,
+                snippet=excluded.snippet,
+                internal_date_utc=excluded.internal_date_utc,
+                label_ids=excluded.label_ids,
+                importance_score=excluded.importance_score,
+                importance_reason=excluded.importance_reason,
+                is_important=excluded.is_important,
+                summary_text=excluded.summary_text,
+                processed_at_utc=excluded.processed_at_utc,
+                notified_at_utc=excluded.notified_at_utc
+            """,
+            (
+                account_id,
+                gmail_message_id,
+                thread_id,
+                from_email,
+                subject,
+                snippet,
+                internal_date_utc,
+                label_ids_text,
+                float(max(0.0, min(1.0, importance_score))),
+                importance_reason,
+                1 if is_important else 0,
+                summary_text,
+                now,
+                notified_at_utc,
+            ),
+        )
+
+    def mark_gmail_notified(self, account_id: str, gmail_message_id: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self._execute(
+            """
+            UPDATE gmail_messages
+            SET notified_at_utc = ?
+            WHERE account_id = ? AND gmail_message_id = ?
+            """,
+            (now, account_id, gmail_message_id),
+        )
+
+    def list_recent_gmail_events(self, account_id: str, limit: int = 20) -> list[sqlite3.Row]:
+        with self._lock:
+            return list(
+                self._conn.execute(
+                    """
+                    SELECT account_id, gmail_message_id, from_email, subject, importance_score, importance_reason,
+                           is_important, processed_at_utc, notified_at_utc
+                    FROM gmail_messages
+                    WHERE account_id = ?
+                    ORDER BY processed_at_utc DESC
+                    LIMIT ?
+                    """,
+                    (account_id, max(1, limit)),
+                ).fetchall()
+            )
+
+    def list_unnotified_important_gmail_events(self, account_id: str, limit: int = 25) -> list[sqlite3.Row]:
+        with self._lock:
+            return list(
+                self._conn.execute(
+                    """
+                    SELECT account_id, gmail_message_id, from_email, subject, snippet, summary_text,
+                           importance_score, importance_reason, processed_at_utc
+                    FROM gmail_messages
+                    WHERE account_id = ?
+                      AND is_important = 1
+                      AND COALESCE(notified_at_utc, '') = ''
+                    ORDER BY processed_at_utc ASC
+                    LIMIT ?
+                    """,
+                    (account_id, max(1, limit)),
+                ).fetchall()
+            )
+
+    def has_recent_notified_gmail_thread(self, account_id: str, thread_id: str, since_utc_iso: str) -> bool:
+        if not thread_id.strip():
+            return False
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT 1
+                FROM gmail_messages
+                WHERE account_id = ?
+                  AND thread_id = ?
+                  AND COALESCE(notified_at_utc, '') != ''
+                  AND notified_at_utc >= ?
+                LIMIT 1
+                """,
+                (account_id, thread_id, since_utc_iso),
+            ).fetchone()
+        return row is not None

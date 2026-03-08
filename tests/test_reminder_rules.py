@@ -4,7 +4,7 @@ import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from src.app.handlers.services.reminder_rules import ReminderLogicHandler
+from src.app.handlers.services.reminders.rules import ReminderLogicHandler
 
 
 class ReminderRulesTests(unittest.TestCase):
@@ -37,14 +37,17 @@ class ReminderRulesTests(unittest.TestCase):
         self.assertTrue(self.logic.looks_like_inline_add_payload("remind me at: tomorrow 9am"))
         self.assertTrue(self.logic.looks_like_inline_add_payload("pay bill #finance"))
         self.assertTrue(self.logic.looks_like_inline_add_payload("call mom !high"))
+        self.assertTrue(self.logic.looks_like_inline_add_payload("check report @biweekly"))
         self.assertFalse(self.logic.looks_like_inline_add_payload("just normal sentence"))
 
     def test_compute_next_due_by_recurrence(self) -> None:
         daily = self.logic.compute_next_due("2026-03-10T09:00:00+00:00", "daily")
         weekly = self.logic.compute_next_due("2026-03-10T09:00:00+00:00", "weekly")
+        biweekly = self.logic.compute_next_due("2026-03-10T09:00:00+00:00", "biweekly")
         monthly = self.logic.compute_next_due("2026-03-10T09:00:00+00:00", "monthly")
         self.assertEqual(daily, "2026-03-11T09:00:00+00:00")
         self.assertEqual(weekly, "2026-03-17T09:00:00+00:00")
+        self.assertEqual(biweekly, "2026-03-24T09:00:00+00:00")
         self.assertEqual(monthly, "2026-04-09T09:00:00+00:00")
 
     def test_compute_next_due_handles_invalid(self) -> None:

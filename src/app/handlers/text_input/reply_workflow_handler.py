@@ -115,9 +115,11 @@ class ReplyWorkflowHandler:
             new_topic = topic_candidate
 
         recurrence = str(current.get("recurrence_rule") or "")
-        every_match = re.search(r"every\s*:\s*(daily|weekly|monthly|none)\b", text, re.IGNORECASE)
+        every_match = re.search(r"every\s*:\s*(daily|weekly|biweekly|fortnightly|monthly|none)\b", text, re.IGNORECASE)
         if every_match:
             parsed_recurrence = every_match.group(1).lower()
+            if parsed_recurrence == "fortnightly":
+                parsed_recurrence = "biweekly"
             recurrence = "" if parsed_recurrence == "none" else parsed_recurrence
 
         changed = (

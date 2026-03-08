@@ -42,14 +42,14 @@ Non-command text is handled by the chat pipeline (`src/app/handlers/runtime/mess
   - `/done` and `/delete` command flows
   - delete wizard entrypoint and direct delete-by-id handling
 
-- `src/app/handlers/services/reminder_rules.py`
+- `src/app/handlers/services/reminders/rules.py`
   - shared reminder-domain utility logic
   - topic splitting, missing-topic message formatting
   - inline `/add` payload heuristic
   - notes-list candidate heuristic
   - recurrence next-due calculation
 
-- `src/app/handlers/services/calendar_sync_handler.py`
+- `src/app/handlers/services/calendar/sync_handler.py`
   - Google Calendar import/export orchestration
   - calendar event -> due datetime conversion helpers
   - import note cleanup and link extraction helpers
@@ -60,7 +60,7 @@ Non-command text is handled by the chat pipeline (`src/app/handlers/runtime/mess
   - pending workflow chain order
   - caption-based attachment entry
 
-- `src/app/handlers/services/scheduler_jobs.py`
+- `src/app/handlers/services/scheduler/jobs.py`
   - scheduled jobs: due reminders, cleanup, auto summaries, daily digest
   - group-summary build/summarize helpers for scheduled flows
   - recurring reminder roll-forward via `ReminderLogicHandler`
@@ -119,7 +119,7 @@ Non-command text is handled by the chat pipeline (`src/app/handlers/runtime/mess
 - `src/app/handlers/runtime/flow_state_service.py`
   - centralized pending-flow state resets
 
-- `src/app/handlers/services/datetime_resolution_handler.py`
+- `src/app/handlers/services/datetime/resolution_handler.py`
   - natural-language datetime resolution orchestration
   - LLM fallback parsing for low-confidence date inputs
   - all-day normalization, explicit-time detection, JSON extraction helpers

@@ -81,7 +81,7 @@ class ReminderLogicHandler:
             return True
         if re.search(r"(?:^|\s)!\s*(immediate|high|mid|low|i|h|m|l)\b", text):
             return True
-        if re.search(r"(?:^|\s)@(daily|weekly|monthly)\b", text):
+        if re.search(r"(?:^|\s)@(daily|weekly|biweekly|monthly|fortnightly)\b", text):
             return True
         return False
 
@@ -97,6 +97,8 @@ class ReminderLogicHandler:
             nxt = current + timedelta(days=1)
         elif recurrence == "weekly":
             nxt = current + timedelta(days=7)
+        elif recurrence in {"biweekly", "fortnightly"}:
+            nxt = current + timedelta(days=14)
         elif recurrence == "monthly":
             nxt = current + timedelta(days=30)
         else:

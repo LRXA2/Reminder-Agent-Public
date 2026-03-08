@@ -125,3 +125,28 @@ def datetime_fallback_prompt(user_text: str, timezone_name: str, now_iso: str) -
         f"Timezone: {timezone_name}. Current local time: {now_iso}. "
         f"Input: {user_text}"
     )
+
+
+def email_importance_prompt(account_id: str, sender: str, subject: str, snippet: str, body_excerpt: str) -> str:
+    return (
+        "You classify whether an email is important for a productivity assistant. "
+        "Return STRICT JSON ONLY with keys: important, score, reason, category, needs_action. "
+        "Rules: important is boolean. score is a number from 0 to 1. "
+        "category must be one of: work, finance, personal, logistics, other. "
+        "needs_action is boolean. reason should be short and concrete. "
+        "No markdown, no prose, no code fences, JSON object only. "
+        f"Account: {account_id}. Sender: {sender}. Subject: {subject}. Snippet: {snippet}. "
+        f"Body excerpt: {body_excerpt[:5000]}"
+    )
+
+
+def email_summary_prompt(account_id: str, sender: str, subject: str, body_excerpt: str) -> str:
+    return (
+        "Summarize this email for a reminder assistant. Return concise plain text with sections: "
+        "Why it matters, Action needed, Deadlines, Links. "
+        "If a section has no content, write '(none)'. Keep under 1600 characters. "
+        f"Account: {account_id}\n"
+        f"Sender: {sender}\n"
+        f"Subject: {subject}\n\n"
+        f"Email content:\n{body_excerpt[:18000]}"
+    )

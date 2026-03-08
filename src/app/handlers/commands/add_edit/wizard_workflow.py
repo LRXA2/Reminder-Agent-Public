@@ -76,14 +76,16 @@ class AddWizardWorkflow:
                     return True
                 state["topic"] = ""
             state["step"] = "recurrence"
-            await update.message.reply_text("Step 4/5 - Repeat interval? `daily`, `weekly`, `monthly`, or `skip`.")
+            await update.message.reply_text("Step 4/5 - Repeat interval? `daily`, `weekly`, `biweekly`, `monthly`, or `skip`.")
             return True
 
         if step == "recurrence":
             if lowered not in {"skip", "none", "no"}:
                 token = lowered.strip()
-                if token not in {"daily", "weekly", "monthly"}:
-                    await update.message.reply_text("Invalid interval. Use `daily`, `weekly`, `monthly`, or `skip`.")
+                if token == "fortnightly":
+                    token = "biweekly"
+                if token not in {"daily", "weekly", "biweekly", "monthly"}:
+                    await update.message.reply_text("Invalid interval. Use `daily`, `weekly`, `biweekly`, `monthly`, or `skip`.")
                     return True
                 if not str(state.get("due_at_utc") or ""):
                     await update.message.reply_text(msg("error_recurrence_requires_due"))

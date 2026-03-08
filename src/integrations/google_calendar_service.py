@@ -12,11 +12,14 @@ LOGGER = logging.getLogger(__name__)
 
 
 class GoogleCalendarSyncService:
+    EVENT_REF_SEP = "::"
+
     def __init__(self, settings: Settings, db: Database):
         self.settings = settings
         self.db = db
         self.enabled = bool(settings.gcal_sync_enabled)
         self.calendar_id = settings.gcal_calendar_id or "primary"
+        self.import_calendar_ids = tuple(settings.gcal_sync_from_calendar_ids) or (self.calendar_id,)
         self.credentials_file = settings.gcal_credentials_file
         self._service = None
         self._service_error = ""
@@ -53,22 +56,25 @@ class GoogleCalendarSyncService:
             return False
 
         event_body = self._build_event_body(reminder)
-        existing_event_id = self.db.get_calendar_event_id(reminder_id, provider="google")
+        existing_event_ref = self.db.get_calendar_event_id(reminder_id, provider="google")
+        existing_calendar_id, existing_event_id = self.parse_event_ref(existing_event_ref)
+        target_calendar_id = existing_calendar_id or self.calendar_id
         try:
             if existing_event_id:
                 updated = (
                     service.events()
-                    .update(calendarId=self.calendar_id, eventId=existing_event_id, body=event_body)
+                    .update(calendarId=target_calendar_id, eventId=existing_event_id, body=event_body)
                     .execute()
                 )
                 event_id = str(updated.get("id") or existing_event_id)
             else:
-                created = service.events().insert(calendarId=self.calendar_id, body=event_body).execute()
+                created = service.events().insert(calendarId=target_calendar_id, body=event_body).execute()
                 event_id = str(created.get("id") or "")
                 if not event_id:
                     return False
 
-            self.db.upsert_calendar_event_id(reminder_id, event_id, provider="google")
+            event_ref = self.make_event_ref(target_calendar_id, event_id)
+            self.db.upsert_calendar_event_id(reminder_id, event_ref, provider="google")
             self._last_error = ""
             return True
         except Exception as exc:
@@ -79,7 +85,8 @@ class GoogleCalendarSyncService:
     def delete_for_reminder_id(self, reminder_id: int) -> bool:
         if not self.enabled:
             return False
-        event_id = self.db.get_calendar_event_id(reminder_id, provider="google")
+        event_ref = self.db.get_calendar_event_id(reminder_id, provider="google")
+        calendar_id, event_id = self.parse_event_ref(event_ref)
         if not event_id:
             return False
 
@@ -89,7 +96,7 @@ class GoogleCalendarSyncService:
             return False
 
         try:
-            service.events().delete(calendarId=self.calendar_id, eventId=event_id).execute()
+            service.events().delete(calendarId=calendar_id or self.calendar_id, eventId=event_id).execute()
         except Exception as exc:
             LOGGER.warning("Google Calendar delete failed for reminder %s: %s", reminder_id, exc)
             return False
@@ -107,34 +114,55 @@ class GoogleCalendarSyncService:
         now = datetime.now(timezone.utc)
         time_min = now.isoformat()
         time_max = (now + timedelta(days=max(1, lookahead_days))).isoformat()
-        try:
-            response = (
-                service.events()
-                .list(
-                    calendarId=self.calendar_id,
-                    timeMin=time_min,
-                    timeMax=time_max,
-                    singleEvents=True,
-                    orderBy="startTime",
-                    maxResults=2500,
+        cleaned: list[dict] = []
+        for calendar_id in self.import_calendar_ids:
+            cal = str(calendar_id or "").strip()
+            if not cal:
+                continue
+            try:
+                response = (
+                    service.events()
+                    .list(
+                        calendarId=cal,
+                        timeMin=time_min,
+                        timeMax=time_max,
+                        singleEvents=True,
+                        orderBy="startTime",
+                        maxResults=2500,
+                    )
+                    .execute()
                 )
-                .execute()
-            )
-            items = response.get("items") or []
-            cleaned: list[dict] = []
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                if str(item.get("status") or "").lower() == "cancelled":
-                    continue
-                event_id = str(item.get("id") or "").strip()
-                if not event_id:
-                    continue
-                cleaned.append(item)
-            return cleaned
-        except Exception as exc:
-            LOGGER.warning("Google Calendar list events failed: %s", exc)
-            return []
+                items = response.get("items") or []
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    if str(item.get("status") or "").lower() == "cancelled":
+                        continue
+                    event_id = str(item.get("id") or "").strip()
+                    if not event_id:
+                        continue
+                    clone = dict(item)
+                    clone["__calendar_id"] = cal
+                    cleaned.append(clone)
+            except Exception as exc:
+                LOGGER.warning("Google Calendar list events failed for calendar %s: %s", cal, exc)
+        return cleaned
+
+    def make_event_ref(self, calendar_id: str, event_id: str) -> str:
+        cal = str(calendar_id or "").strip() or self.calendar_id
+        evt = str(event_id or "").strip()
+        if not evt:
+            return ""
+        return f"{cal}{self.EVENT_REF_SEP}{evt}"
+
+    def parse_event_ref(self, value: str | None) -> tuple[str, str]:
+        raw = str(value or "").strip()
+        if not raw:
+            return "", ""
+        if self.EVENT_REF_SEP not in raw:
+            return "", raw
+        calendar_id, event_id = raw.split(self.EVENT_REF_SEP, 1)
+        return calendar_id.strip(), event_id.strip()
 
     def _get_service(self):
         if self._service is not None:

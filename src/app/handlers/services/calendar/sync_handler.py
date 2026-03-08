@@ -48,6 +48,11 @@ class CalendarSyncHandler:
             event_id = str(event.get("id") or "").strip()
             if not event_id:
                 continue
+            calendar_id = str(event.get("__calendar_id") or self.bot.calendar_sync.calendar_id).strip()
+            event_ref = self.bot.calendar_sync.make_event_ref(calendar_id, event_id)
+
+            if self.bot.db.is_calendar_event_tombstoned(event_ref, provider="google", ttl_days=30):
+                continue
             if self.bot.db.is_calendar_event_tombstoned(event_id, provider="google", ttl_days=30):
                 continue
             due_at_utc = self.calendar_event_to_due_utc(event)
@@ -60,7 +65,9 @@ class CalendarSyncHandler:
             link = str(event.get("htmlLink") or "").strip() or self.extract_first_url(raw_notes)
             notes = self.clean_calendar_import_notes(raw_notes)
 
-            mapped_reminder_id = self.bot.db.get_reminder_id_by_calendar_event_id(event_id, provider="google")
+            mapped_reminder_id = self.bot.db.get_reminder_id_by_calendar_event_id(event_ref, provider="google")
+            if not mapped_reminder_id:
+                mapped_reminder_id = self.bot.db.get_reminder_id_by_calendar_event_id(event_id, provider="google")
             if mapped_reminder_id:
                 row = self.bot.db.get_reminder_by_id(mapped_reminder_id)
                 if row is None:
@@ -107,7 +114,7 @@ class CalendarSyncHandler:
                 chat_id_to_notify=update.effective_chat.id,
                 recurrence_rule=None,
             )
-            self.bot.db.upsert_calendar_event_id(reminder_id, event_id, provider="google")
+            self.bot.db.upsert_calendar_event_id(reminder_id, event_ref, provider="google")
             created += 1
 
         LOGGER.info(

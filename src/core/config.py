@@ -47,8 +47,26 @@ class Settings:
     auto_summary_enabled: bool
     auto_summary_chat_ids: Tuple[int, ...]
     auto_summary_min_interval_minutes: int
+    gmail_enabled: bool
+    gmail_poll_interval_minutes: int
+    gmail_global_query: str
+    gmail_use_llm_importance: bool
+    gmail_require_rule_match: bool
+    gmail_summary_enabled: bool
+    gmail_draft_enabled: bool
+    gmail_accounts_json: str
+    gmail_accounts_file: str
+    gmail_delivery_mode: str
+    gmail_batch_interval_minutes: int
+    gmail_urgent_score_threshold: float
+    gmail_thread_cooldown_minutes: int
+    gmail_vip_sender_score_boost: float
+    gmail_trusted_domain_score_boost: float
+    gmail_system_sender_score_boost: float
+    gmail_attachment_score_boost: float
     gcal_sync_enabled: bool
     gcal_calendar_id: str
+    gcal_sync_from_calendar_ids: Tuple[str, ...]
     gcal_credentials_file: str
     db_path: str
     default_timezone: str
@@ -93,6 +111,13 @@ def _bool_env(name: str, default: bool) -> bool:
     return default
 
 
+def _float_env(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None or value.strip() == "":
+        return default
+    return float(value)
+
+
 def _parse_digest_times(value: str) -> Tuple[tuple[int, int], ...]:
     times: list[tuple[int, int]] = []
     for raw_part in value.split(","):
@@ -122,6 +147,16 @@ def _parse_int_csv(value: str) -> Tuple[int, ...]:
     return tuple(items)
 
 
+def _parse_str_csv(value: str) -> Tuple[str, ...]:
+    items: list[str] = []
+    for raw_part in value.split(","):
+        part = raw_part.strip()
+        if not part:
+            continue
+        items.append(part)
+    return tuple(items)
+
+
 def get_settings() -> Settings:
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
@@ -134,6 +169,10 @@ def get_settings() -> Settings:
 
     allowed_users_raw = os.getenv("ALLOWED_TELEGRAM_USER_IDS", "").strip()
     allowed_users = _parse_int_csv(allowed_users_raw) if allowed_users_raw else tuple()
+
+    gcal_calendar_id = os.getenv("GCAL_CALENDAR_ID", "primary").strip() or "primary"
+    gcal_sync_from_raw = os.getenv("GCAL_SYNC_FROM_CALENDAR_IDS", "").strip()
+    gcal_sync_from_calendar_ids = _parse_str_csv(gcal_sync_from_raw) if gcal_sync_from_raw else (gcal_calendar_id,)
 
     return Settings(
         telegram_bot_token=token,
@@ -150,8 +189,26 @@ def get_settings() -> Settings:
         auto_summary_enabled=_bool_env("AUTO_SUMMARY_ENABLED", False),
         auto_summary_chat_ids=_parse_int_csv(os.getenv("AUTO_SUMMARY_CHAT_IDS", "").strip()),
         auto_summary_min_interval_minutes=max(1, _int_env("AUTO_SUMMARY_MIN_INTERVAL_MINUTES", 15)),
+        gmail_enabled=_bool_env("GMAIL_ENABLED", False),
+        gmail_poll_interval_minutes=max(1, _int_env("GMAIL_POLL_INTERVAL_MINUTES", 2)),
+        gmail_global_query=os.getenv("GMAIL_GLOBAL_QUERY", "").strip(),
+        gmail_use_llm_importance=_bool_env("GMAIL_USE_LLM_IMPORTANCE", True),
+        gmail_require_rule_match=_bool_env("GMAIL_REQUIRE_RULE_MATCH", True),
+        gmail_summary_enabled=_bool_env("GMAIL_SUMMARY_ENABLED", True),
+        gmail_draft_enabled=_bool_env("GMAIL_DRAFT_ENABLED", False),
+        gmail_accounts_json=os.getenv("GMAIL_ACCOUNTS_JSON", "[]").strip() or "[]",
+        gmail_accounts_file=os.getenv("GMAIL_ACCOUNTS_FILE", "").strip(),
+        gmail_delivery_mode=os.getenv("GMAIL_DELIVERY_MODE", "batch").strip().lower(),
+        gmail_batch_interval_minutes=max(1, _int_env("GMAIL_BATCH_INTERVAL_MINUTES", 15)),
+        gmail_urgent_score_threshold=max(0.0, min(1.0, _float_env("GMAIL_URGENT_SCORE_THRESHOLD", 0.85))),
+        gmail_thread_cooldown_minutes=max(0, _int_env("GMAIL_THREAD_COOLDOWN_MINUTES", 90)),
+        gmail_vip_sender_score_boost=max(0.0, min(1.0, _float_env("GMAIL_VIP_SENDER_SCORE_BOOST", 0.45))),
+        gmail_trusted_domain_score_boost=max(0.0, min(1.0, _float_env("GMAIL_TRUSTED_DOMAIN_SCORE_BOOST", 0.25))),
+        gmail_system_sender_score_boost=max(0.0, min(1.0, _float_env("GMAIL_SYSTEM_SENDER_SCORE_BOOST", 0.15))),
+        gmail_attachment_score_boost=max(0.0, min(1.0, _float_env("GMAIL_ATTACHMENT_SCORE_BOOST", 0.2))),
         gcal_sync_enabled=_bool_env("GCAL_SYNC_ENABLED", False),
-        gcal_calendar_id=os.getenv("GCAL_CALENDAR_ID", "primary").strip(),
+        gcal_calendar_id=gcal_calendar_id,
+        gcal_sync_from_calendar_ids=gcal_sync_from_calendar_ids,
         gcal_credentials_file=os.getenv("GCAL_CREDENTIALS_FILE", "").strip(),
         db_path=os.getenv("DB_PATH", "reminder_agent.db"),
         default_timezone=os.getenv("DEFAULT_TIMEZONE", "UTC"),

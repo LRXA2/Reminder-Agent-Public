@@ -112,6 +112,24 @@ class JobRunner:
             )
             self.bot.db.set_app_setting(setting_key, now.isoformat())
 
+    async def process_gmail_updates(self) -> None:
+        if not self.bot.settings.gmail_enabled:
+            return
+        if not self.bot.gmail_ingest_handler.account_count():
+            return
+        try:
+            stats = await self.bot.gmail_ingest_handler.poll_all_accounts()
+            LOGGER.info(
+                "gmail poll done accounts=%s processed=%s important=%s notified=%s errors=%s",
+                stats.get("accounts", 0),
+                stats.get("processed", 0),
+                stats.get("important", 0),
+                stats.get("notified", 0),
+                stats.get("errors", 0),
+            )
+        except Exception:
+            LOGGER.exception("gmail poll job failed")
+
     async def send_daily_digest(self) -> None:
         if not self.bot.settings.personal_chat_id:
             return

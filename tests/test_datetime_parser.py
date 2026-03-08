@@ -45,6 +45,13 @@ class DateTimeParserTests(unittest.TestCase):
         assert result.dt is not None
         self.assertEqual(result.dt.astimezone(self.tz).strftime("%Y-%m-%d %H:%M"), "2026-02-22 09:00")
 
+    def test_slash_date_uses_day_month_year(self) -> None:
+        assert parse_datetime_text is not None
+        result = parse_datetime_text("1/3/2026", "Asia/Singapore", now_local=self.now_local)
+        self.assertIsNotNone(result.dt)
+        assert result.dt is not None
+        self.assertEqual(result.dt.astimezone(self.tz).strftime("%Y-%m-%d %H:%M"), "2026-03-01 00:00")
+
 
 if __name__ == "__main__":
     unittest.main()

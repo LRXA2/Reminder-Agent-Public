@@ -92,7 +92,7 @@ class EditWizard:
                     "title": "Enter new title (or `skip`):",
                     "due": "Enter new due date/time (`none` to clear, or `skip`):",
                     "priority": "Enter priority (`immediate|high|mid|low`, or `skip`):",
-                    "interval": "Enter interval (`daily|weekly|monthly|none`, or `skip`):",
+                    "interval": "Enter interval (`daily|weekly|biweekly|monthly|none`, or `skip`):",
                     "link": "Enter link (`https://...`, `none` to clear, or `skip`):",
                     "notes": "Enter notes (`none` to clear, or `skip`):",
                 }
@@ -145,13 +145,14 @@ class EditWizard:
                 elif field == "interval":
                     if lowered in {"none", "clear"}:
                         state["recurrence"] = ""
-                    elif lowered in {"daily", "weekly", "monthly"}:
+                    elif lowered in {"daily", "weekly", "biweekly", "fortnightly", "monthly"}:
+                        normalized = "biweekly" if lowered == "fortnightly" else lowered
                         if not str(state.get("due_at_utc") or ""):
                             await target.reply_text(msg("error_recurrence_requires_due"))
                             return True
-                        state["recurrence"] = lowered
+                        state["recurrence"] = normalized
                     else:
-                        await target.reply_text("Invalid interval. Try again or `skip`.")
+                        await target.reply_text("Invalid interval. Use `daily`, `weekly`, `biweekly`, `monthly`, or `skip`.")
                         return True
                 elif field == "link":
                     if lowered in {"none", "clear"}:

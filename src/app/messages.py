@@ -11,6 +11,7 @@ Available topics:
 - files
 - models
 - sync
+- gmail
 - examples
 """
 
@@ -22,7 +23,7 @@ HELP_TOPICS = {
 Starts guided add flow (due -> priority -> topic -> interval -> link/notes).
 
 Quick inline form also works:
-/add <task> [topic:<a,b>|#tag] [link:<url>] [p:immediate|high|mid|low|!h] [at:<time|none>] [every:daily|weekly|monthly|@daily]
+/add <task> [topic:<a,b>|#tag] [link:<url>] [p:immediate|high|mid|low|!h] [at:<time|none>] [every:daily|weekly|biweekly|monthly|@daily]
 - Create topics first: /topics create <name>
 - If REQUIRE_TOPIC_ON_ADD=true, topic is mandatory.
 - /add Pay rent p:high at:tomorrow 9am
@@ -34,7 +35,7 @@ Quick inline form also works:
 Starts guided edit flow (title -> due -> priority -> topic -> interval -> link/notes).
 
 Quick inline form also works:
-/edit <id> [title:<text>] [topic:<a,b>|topic:+a|topic:-a|topic:none] [p:<priority>] [at:<datetime|none>] [notes:<text>] [link:<url>] [every:daily|weekly|monthly|none]
+/edit <id> [title:<text>] [topic:<a,b>|topic:+a|topic:-a|topic:none] [p:<priority>] [at:<datetime|none>] [notes:<text>] [link:<url>] [every:daily|weekly|biweekly|monthly|none]
 /done <id>
 /delete <id>
 /delete
@@ -129,9 +130,28 @@ Export Telegram reminders to Google Calendar.
 
 Behavior:
 - open reminders with due date -> pushed to calendar
-- calendar events -> imported/updated as reminders
+- calendar events -> imported/updated as reminders (from GCAL_SYNC_FROM_CALENDAR_IDS when set)
 - all-day events stay date-only
 - no-due reminders are not pushed
+""",
+    "gmail": """Gmail
+
+/gmail status
+Show Gmail ingest status and account health.
+
+/gmail accounts
+List configured Gmail account IDs from GMAIL_ACCOUNTS_JSON.
+
+/gmail sync
+Run an immediate Gmail poll across all configured accounts.
+
+Behavior:
+- supports multiple Gmail accounts
+- applies global + per-account filters
+- uses rules, then optional LLM importance check
+- supports sender trust tiers (vip/domain/system) score boosts
+- detects attachments and can boost by attachment filename keywords
+- sends important email summaries to Telegram
 """,
     "examples": """Examples
 
@@ -152,16 +172,18 @@ Behavior:
 /topic remove 12 work
 /summary -1002219388089
 /sync both
+/gmail status
+/gmail sync
 """,
 }
 
 
 MESSAGES = {
-    "usage_add": "Usage: /add <task> (guided) OR /add <task> [topic:<a,b>|#tag] [p:high|!h] [at:tomorrow 9am|none] [every:daily|weekly|monthly|@daily] [link:<url>]",
+    "usage_add": "Usage: /add <task> (guided) OR /add <task> [topic:<a,b>|#tag] [p:high|!h] [at:tomorrow 9am|none] [every:daily|weekly|biweekly|monthly|@daily] [link:<url>]",
     "usage_done": "Usage: /done <id>",
-    "usage_edit": "Usage: /edit <id> [title:<text>] [topic:<a,b>|topic:+a|topic:-a|topic:none] [p:<priority>] [at:<datetime>] [notes:<text>] [link:<url>] [every:daily|weekly|monthly|none]",
+    "usage_edit": "Usage: /edit <id> [title:<text>] [topic:<a,b>|topic:+a|topic:-a|topic:none] [p:<priority>] [at:<datetime>] [notes:<text>] [link:<url>] [every:daily|weekly|biweekly|monthly|none]",
     "usage_delete": "Usage: /delete <id>",
-    "usage_notes": "Usage: /notes OR /notes <id>",
+    "usage_notes": "Usage: /notes | /notes <id> | /notes list | /notes view <id> | /notes edit <id> | /notes clear <id>",
     "usage_list": "Usage: /list all | /list <chat_id> | /list priority high | /list topic <name> | /list archived [topic <name>] | /list due 14d | /list today|tomorrow|overdue",
     "usage_summary": "Usage: /summary OR /summary <chat_id>",
     "usage_topics": "Usage: /topics | /topics all | /topics create <name> | /topics rename <id> <new> | /topics delete <id> | /topics merge <from> <to>",
